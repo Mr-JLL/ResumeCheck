@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}新增岗位{% endblock %}
+
+{% block content %}
+<h1 class="page-title">新增岗位</h1>
+
+<div class="info-card">
+  <h3>使用说明</h3>
+  <p>把岗位的「工作职责」和「任职要求」原文粘贴到下面，系统会自动为你：</p>
+  <ol>
+    <li>提取硬性指标（学历、年限、英语要求）</li>
+    <li>识别核心能力关键词</li>
+    <li>生成岗位评判 prompt</li>
+    <li>保存为新岗位，可立即开始抓取简历</li>
+  </ol>
+</div>
+
+<form id="new-job-form" class="form-panel">
+  <label class="form-label">
+    岗位名称
+    <input type="text" id="job-name" placeholder="例如：自动化测试工程师" required>
+  </label>
+  <label class="form-label">
+    JD 原文（含工作职责 + 任职要求，越详细越准确）
+    <textarea id="jd-text" rows="14" placeholder="把 JD 原文粘贴在这里..." required></textarea>
+  </label>
+  <button class="btn btn-primary btn-lg" type="submit">分析并保存</button>
+</form>
+
+<div class="form-output" id="form-output"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.getElementById("new-job-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("job-name").value.trim();
+    const jd = document.getElementById("jd-text").value.trim();
+    if (!name || !jd) return;
+    const out = document.getElementById("form-output");
+    out.innerHTML = "<p>正在分析 JD...</p>";
+    const resp = await fetch("/api/jobs/create", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name, jd})
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      out.innerHTML = `<p class="error">失败：${data.message}</p>`;
+      return;
+    }
+    out.innerHTML = `
+      <div class="info-card">
+        <h3>已创建岗位：${data.config.name}</h3>
+        <pre>${JSON.stringify(data.config, null, 2)}</pre>
+        <a class="btn btn-primary" href="/dashboard">返回首页</a>
+      </div>`;
+  });
+</script>
+{% endblock %}

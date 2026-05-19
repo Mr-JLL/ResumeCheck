@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}{{ job_name }} · 清理排除{% endblock %}
+
+{% block content %}
+<h1 class="page-title">{{ job_name }} · 排除候选人清理助手</h1>
+
+<div class="info-card">
+  <p>系统已将本岗位被排除的候选人按淘汰原因分组。每组可一键全部删除。</p>
+  <p style="font-size:13px;color:#666;">删除后不可恢复，但同一份简历下次抓取仍会重新拉取。</p>
+</div>
+
+<div id="groups" class="cleanup-groups">
+  <div class="empty-state">加载中…</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const JOB_NAME = {{ job_name|tojson }};
+const $ = id => document.getElementById(id);
+
+function escapeHtml(s){
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, ch=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+  }[ch]));
+}
+
+async function load(){
+  $("groups").innerHTML = `<div class="empty-state">加载中…</div>`;
+  const r = await fetch(`/api/cleanup/groups/${encodeURIComponent(JOB_NAME)}`);
+  const d = await r.json();
+  if (!d.ok){
+    $("groups").innerHTML = `<div class="error">加载失败：${escapeHtml(d.message||"")}</div>`;
+    return;
+  }
+  if (!d.groups || d.groups.length === 0){
+    $("groups").innerHTML = `<div class="empty-state">本岗位没有被排除的候选人。</div>`;
+    return;
+  }
+  $("groups").innerHTML = d.groups.map((g, i) => {
+    const previews = g.items.slice(0, 8).map(it =>
+      `<li>${escapeHtml(it.name||"?")} <span class="evidence-text">${escapeHtml((it.reason||"").slice(0,40))}</span></li>`
+    ).join("");
+    return `
+      <div class="group-card" data-key="${escapeHtml(g.key)}">
+        <div class="group-head">
+          <span class="group-label">${escapeHtml(g.label)}</span>
+          <span class="group-count">${g.count} 人</span>
+          <button class="btn btn-danger btn-delete-group" data-i="${i}">一键删除本组</button>
+        </div>
+        <ul class="group-preview">${previews}${g.count>8?'<li class="more">… 还有 '+(g.count-8)+' 人</li>':''}</ul>
+      </div>`;
+  }).join("");
+
+  // 缓存数据
+  window.__groups = d.groups;
+}
+
+document.addEventListener("click", async (e)=>{
+  if (!e.target.classList.contains("btn-delete-group")) return;
+  const i = parseInt(e.target.dataset.i);
+  const g = window.__groups[i];
+  if (!g) return;
+  if (!confirm(`确定删除 ${g.count} 个「${g.label}」候选人？此操作不可恢复。`)) return;
+  e.target.disabled = true;
+  e.target.textContent = "删除中…";
+  try {
+    const r = await fetch("/api/cleanup/delete_group", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({job_name: JOB_NAME, items: g.items})
+    });
+    const d = await r.json();
+    if (d.ok){
+      alert(`已删除 ${d.deleted} 人`);
+      load();
+    } else {
+      alert("失败：" + (d.message||""));
+      e.target.disabled = false;
+      e.target.textContent = "一键删除本组";
+    }
+  } catch(err){
+    alert("网络错误：" + err.message);
+    e.target.disabled = false;
+    e.target.textContent = "一键删除本组";
+  }
+});
+
+load();
+</script>
+{% endblock %}

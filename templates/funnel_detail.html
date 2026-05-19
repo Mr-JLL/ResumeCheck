@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}{{ job_name }} · 岗位漏斗分析{% endblock %}
+
+{% block content %}
+<h1 class="page-title">{{ job_name }} · 岗位漏斗与 JD 诊断</h1>
+
+<div class="header-actions">
+  <a class="btn btn-success" href="{{ url_for('triage_page', job_name=job_name) }}">⚡ 进入处理台</a>
+  <a class="btn" href="{{ url_for('cards_page', job_name=job_name) }}">候选人概览</a>
+  <a class="btn btn-link" href="{{ url_for('funnel_page') }}">← 返回看板</a>
+</div>
+
+{% if detail %}
+<h2 class="section-title">五阶段漏斗</h2>
+<div class="funnel-stages">
+  {% for s in detail.stages %}
+    <div class="funnel-stage">
+      <div class="stage-name">{{ s.name }}</div>
+      <div class="stage-count">{{ s.count }}</div>
+      {% if not loop.first %}
+        <div class="stage-dropoff">流失 {{ s.dropoff_pct }}%</div>
+      {% endif %}
+    </div>
+    {% if not loop.last %}<div class="funnel-arrow">→</div>{% endif %}
+  {% endfor %}
+</div>
+<p style="font-size:13px;color:#666;">已淘汰 {{ detail.rejected }} 人 · 黄色待复核 {{ detail.yellow }} 人</p>
+{% endif %}
+
+{% if rarity and rarity['items'] %}
+<h2 class="section-title">市场稀缺性分析（最难满足的条件 Top）</h2>
+<table class="job-table">
+  <thead><tr><th>条件</th><th>不满足人数</th><th>不满足率</th><th>建议</th></tr></thead>
+  <tbody>
+    {% for it in rarity['items'] %}
+    <tr>
+      <td>{{ it.condition }}</td>
+      <td>{{ it.count }}</td>
+      <td>{{ it.miss_rate }}%</td>
+      <td>{{ it.suggestion }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p style="font-size:13px;color:#666;">基于本岗位 {{ rarity.total_evaluations }} 条评估</p>
+{% endif %}
+
+{% if supply_demand and supply_demand.available %}
+<h2 class="section-title">供需敏感性矩阵（条件松紧弹性分析）</h2>
+<p style="font-size:13px;color:#666;margin-bottom:12px">
+  共收到 <b>{{ supply_demand.total_attempts }}</b> 份简历，预筛通过 <b>{{ supply_demand.total_eval }}</b> 份（{{ supply_demand.current_pass_rate }}%）。
+  下表显示放宽每项硬性条件能扩大多少候选池。
+</p>
+<table class="job-table">
+  <thead>
+    <tr>
+      <th>筛选条件</th>
+      <th>当前设置</th>
+      <th>因此失败数</th>
+      <th>仅此条件失败</th>
+      <th>放宽可扩池</th>
+      <th>影响等级</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for cond in supply_demand.conditions %}
+    {% if cond.fail_count > 0 %}
+    <tr>
+      <td><b>{{ cond.label }}</b></td>
+      <td>{{ cond.current_setting }}</td>
+      <td>{{ cond.fail_count }}（{{ cond.fail_rate }}%）</td>
+      <td>{{ cond.single_fail }}</td>
+      <td>
+        <span style="font-weight:700;color:{% if cond.expand_pct > 15 %}#27ae60{% elif cond.expand_pct > 5 %}#e67e22{% else %}#888{% endif %}">
+          +{{ cond.expand_if_relaxed }}（+{{ cond.expand_pct }}%）
+        </span>
+      </td>
+      <td style="font-weight:600;color:{% if cond.impact=='high' %}#c0392b{% elif cond.impact=='medium' %}#e67e22{% else %}#27ae60{% endif %}">
+        {{ {'high':'⚠ 高影响','medium':'⚡ 中等','low':'✓ 低影响','none':'— 无影响'}[cond.impact] }}
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+<p style="font-size:11px;color:#aaa;margin-top:6px">
+  「仅此条件失败」= 放宽该条件后，这些候选人将直接进入 LLM 评估阶段。
+</p>
+{% endif %}
+
+<h2 class="section-title">反向 JD 优化器</h2>
+{% if not reverse_jd.available %}
+  <div class="info-card">
+    <p>{{ reverse_jd.message }}</p>
+    <p style="font-size:13px;color:#666;">JD 优化器需要至少 100 条评估数据才能给出有意义的诊断。</p>
+  </div>
+{% else %}
+  <div class="info-card">
+    <p>基于 {{ reverse_jd.evaluations }} 条评估数据 · 深绿候选人 {{ reverse_jd.deep_count }} 人</p>
+  </div>
+  {% if reverse_jd.findings %}
+    {% for f in reverse_jd.findings %}
+    <div class="finding-card">
+      <div class="finding-type">{{ f.type }}</div>
+      <div class="finding-title">{{ f.title }}</div>
+      <div class="finding-detail">{{ f.detail }}</div>
+      <div class="finding-suggest">💡 {{ f.suggestion }}</div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="info-card">未发现明显异常，当前 JD 与候选人池匹配良好。</div>
+  {% endif %}
+{% endif %}
+{% endblock %}

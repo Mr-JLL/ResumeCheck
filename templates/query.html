@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}人才库自然语言查询{% endblock %}
+
+{% block content %}
+<h1 class="page-title">人才库查询</h1>
+
+<div class="info-card">
+  <p>用日常中文提问，例如：</p>
+  <ul>
+    <li>有哪些被标记为深绿但还没联系的项目工程师？</li>
+    <li>过去30天里压铸经验超过5年的候选人</li>
+    <li>哪些已录用的候选人来自宁波拓普？</li>
+    <li>给我看英语水平专业八级且学历本科的所有候选人</li>
+  </ul>
+</div>
+
+<div class="query-panel">
+  <textarea id="nl-input" rows="3" placeholder="在这里输入你的问题..."></textarea>
+  <button class="btn btn-primary" id="btn-query">查询</button>
+</div>
+
+<div class="query-output" id="query-output"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='resume_card.js') }}"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+// 当前视图模式：'card' 或 'table'
+let _viewMode = 'card';
+let _lastRows  = [];
+let _isCandResult = false;
+
+$('btn-query').addEventListener('click', async () => {
+  const q = $('nl-input').value.trim();
+  if (!q) return;
+  const out = $('query-output');
+  out.innerHTML = '<p>正在查询...</p>';
+  try {
+    const resp = await fetch('/api/query', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ question: q }),
+    });
+    const data = await resp.json();
+    if (!data.ok) {
+      out.innerHTML = `<p class="error">查询失败：${data.message}</p>`;
+      return;
+    }
+    _lastRows      = data.rows || [];
+    _isCandResult  = ResumeCard.isCandidateLike(_lastRows);
+    _viewMode      = _isCandResult ? 'card' : 'table';
+    renderResult(data);
+  } catch (e) {
+    out.innerHTML = `<p class="error">网络错误：${e.message}</p>`;
+  }
+});
+
+function renderResult(data) {
+  const out = $('query-output');
+
+  // 说明行（SQL + 解释）
+  let html = `<p class="query-meta">解释：${data.explanation}</p>`;
+  html += `<p class="query-meta">SQL：<code>${escapeHtml(data.sql)}</code></p>`;
+
+  if (!_lastRows.length) {
+    html += '<p>无匹配结果。</p>';
+    out.innerHTML = html;
+    return;
+  }
+
+  // 工具栏：结果数 + 视图切换（仅候选人结果时显示卡片切换按钮）
+  html += `<div class="rc-toolbar">`;
+  html += `<span>结果 <b>${_lastRows.length}</b> 条</span>`;
+  if (_isCandResult) {
+    html += `
+      <button class="rc-view-btn ${_viewMode === 'card'  ? 'active' : ''}" onclick="switchView('card')">卡片视图</button>
+      <button class="rc-view-btn ${_viewMode === 'table' ? 'active' : ''}" onclick="switchView('table')">表格视图</button>`;
+  }
+  html += `</div>`;
+
+  if (_viewMode === 'card' && _isCandResult) {
+    html += '<div class="rc-results">';
+    _lastRows.forEach((row, i) => {
+      html += ResumeCard.render(row, { uidPrefix: 'sql' + i });
+    });
+    html += '</div>';
+  } else {
+    html += renderTable(_lastRows);
+  }
+
+  out.innerHTML = html;
+}
+
+function switchView(mode) {
+  _viewMode = mode;
+  // 用上次的 data 重渲染，但 data 已存在 _lastRows 中
+  // 直接重构输出区，保留说明行
+  const out = $('query-output');
+  // 只替换工具栏以后的部分
+  const toolbar = out.querySelector('.rc-toolbar');
+  if (!toolbar) return;
+
+  // 更新按钮高亮
+  out.querySelectorAll('.rc-view-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.includes(mode === 'card' ? '卡片' : '表格'));
+  });
+
+  // 替换数据区
+  let dataArea = out.querySelector('.rc-results, .result-table');
+  if (dataArea) dataArea.remove();
+
+  const div = document.createElement('div');
+  if (mode === 'card') {
+    div.className = 'rc-results';
+    _lastRows.forEach((row, i) => {
+      div.innerHTML += ResumeCard.render(row, { uidPrefix: 'sql' + i });
+    });
+  } else {
+    div.innerHTML = renderTable(_lastRows);
+  }
+  out.appendChild(div);
+}
+
+function renderTable(rows) {
+  if (!rows.length) return '<p>无匹配结果。</p>';
+  let t = "<table class='result-table'><thead><tr>";
+  Object.keys(rows[0]).forEach(k => { t += `<th>${escapeHtml(k)}</th>`; });
+  t += "</tr></thead><tbody>";
+  rows.forEach(r => {
+    t += "<tr>";
+    Object.values(r).forEach(v => {
+      let cell = v == null ? "" : String(v);
+      if (cell.length > 200) cell = cell.substring(0, 200) + "...";
+      t += `<td>${escapeHtml(cell)}</td>`;
+    });
+    t += "</tr>";
+  });
+  t += "</tbody></table>";
+  return t;
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, m =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[m]);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,60 @@
+{
+  "name": "项目工程师",
+  "target_count": 30,
+  "min_education": "全日制本科",
+  "min_years": 3,
+  "english_required": "yes_strong",
+  "english_threshold": "英语可作为工作语言沟通；有较强英文读写能力",
+  "industry_required": [
+    "汽车",
+    "汽车零部件",
+    "压铸"
+  ],
+  "industry_excluded": [],
+  "requires_management": false,
+  "management_years": 0,
+  "key_responsibilities": "新项目可行性分析、APQP推进、DFM、PPAP文件包、客户技术对接、VDA6.3审核",
+  "core_skills": [
+    "APQP",
+    "DFM",
+    "PFMEA",
+    "PPAP",
+    "DR/TR评审",
+    "VDA6.3",
+    "项目主导"
+  ],
+  "preferred_skills": [],
+  "extraction_focus": "项目主导经历（Owner vs 参与）、APQP/DFM、跨部门协调、客户审核、技术评审、PPAP文件包",
+  "rules": [
+    {
+      "name": "学历",
+      "description": "第一学历必须为全日制本科及以上，机械类专业",
+      "type": "hard"
+    },
+    {
+      "name": "年限",
+      "description": "汽车行业压铸类相关产品经验≥3年",
+      "type": "hard"
+    },
+    {
+      "name": "英语",
+      "description": "英语可作为工作语言沟通；能编写中英文项目资料",
+      "type": "hard"
+    },
+    {
+      "name": "项目",
+      "description": "必须为项目Owner（主导项目全流程），而非项目参与者",
+      "type": "soft"
+    },
+    {
+      "name": "流程",
+      "description": "熟悉IATF16949及五大工具，熟悉汽车产品/模具开发流程",
+      "type": "soft"
+    },
+    {
+      "name": "能力",
+      "description": "能进行新项目图纸评审、策划与开发",
+      "type": "soft"
+    }
+  ]
+}

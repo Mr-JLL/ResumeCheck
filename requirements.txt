@@ -1,0 +1,11 @@
+openai>=1.0.0
+httpx
+python-dotenv
+beautifulsoup4
+markdownify
+selenium
+openpyxl
+pdfplumber
+flask>=2.3.0
+flask-cors
+chromadb>=0.4.0

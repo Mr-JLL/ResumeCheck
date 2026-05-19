@@ -1,0 +1,637 @@
+{% extends "base.html" %}
+{% block title %}{{ job_name }} · 通过简历{% endblock %}
+
+{% block content %}
+<div class="apr-wrap">
+
+  <!-- ══ 顶部 ══ -->
+  <div class="apr-header">
+    <div class="apr-title-row">
+      <a href="{{ url_for('dashboard') }}" class="apr-back">← 首页</a>
+      <h1 class="apr-title">
+        {{ job_name }} · 通过简历
+        <span class="apr-badge" id="total-badge">共{{ total }}人</span>
+      </h1>
+      <a class="btn" href="{{ url_for('cockpit_page', job_name=job_name) }}">驾驶舱</a>
+      <a class="btn" href="{{ url_for('triage_page', job_name=job_name) }}">⚡ 处理台</a>
+      <button class="btn" style="background:#3d5afe;color:#fff;border-color:#3d5afe" onclick="openImportPanel()">导入简历</button>
+    </div>
+    <!-- 需求8(4): 日期筛选 -->
+    <div class="apr-date-row">
+      <span class="filter-lbl">通过时间：</span>
+      <input type="date" id="date-from" value="{{ date_from }}">
+      <span style="color:#aaa">至</span>
+      <input type="date" id="date-to" value="{{ date_to }}">
+      <button class="btn btn-primary" onclick="applyDateFilter()">筛选</button>
+      {% if date_from or date_to %}
+      <a class="btn" href="{{ url_for('approved_page', job_name=job_name) }}">清除</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="apr-body">
+    <!-- 卡片区 -->
+    <div class="apr-main" id="apr-main">
+      <div style="text-align:center;color:#bbb;padding:40px">加载中…</div>
+    </div>
+
+    <!-- 需求8(3): 实时统计面板 -->
+    <aside class="apr-sidebar">
+      <div class="sb-title">阶段统计</div>
+      <div id="stage-stats"></div>
+    </aside>
+  </div>
+</div>
+
+<!-- 需求8(5): 拒绝原因 Modal -->
+<div id="rr-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:1000;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:10px;padding:24px;width:360px;max-width:95vw;
+              box-shadow:0 20px 60px rgba(0,0,0,.25)">
+    <div style="font-size:15px;font-weight:700;color:#e74c3c;margin-bottom:14px">选择拒绝原因（可多选）</div>
+    <p style="font-size:12px;color:#888;margin:0 0 14px">候选人：<b id="rr-name"></b></p>
+    <div id="rr-options" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
+    <input type="text" id="rr-custom" placeholder="其他原因（可选）"
+           style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;
+                  border-radius:6px;font-size:13px;margin-bottom:16px">
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="cancelRR()" style="padding:7px 16px;border:1px solid #ccc;border-radius:5px;background:#f5f6fa;cursor:pointer;font-size:13px">取消</button>
+      <button onclick="confirmRR()" style="padding:7px 18px;border:none;border-radius:5px;background:#e74c3c;color:#fff;cursor:pointer;font-size:13px;font-weight:600">确认</button>
+    </div>
+  </div>
+</div>
+<!-- ══════════ 导入简历面板 ══════════ -->
+<div id="import-panel" style="display:none;position:fixed;top:0;right:0;width:420px;max-width:100vw;
+     height:100vh;background:#fff;box-shadow:-4px 0 20px rgba(0,0,0,.18);z-index:1200;
+     flex-direction:column;overflow:hidden">
+  <div style="background:#3d5afe;color:#fff;padding:14px 18px;display:flex;align-items:center;
+              justify-content:space-between;flex-shrink:0">
+    <span style="font-size:14px;font-weight:700">导入简历（自投）</span>
+    <button onclick="closeImportPanel()" style="background:none;border:none;color:#fff;
+            font-size:22px;cursor:pointer;line-height:1">×</button>
+  </div>
+  <div id="import-drop-zone" style="margin:16px;border:2px dashed #c5cae9;border-radius:8px;
+       padding:24px;text-align:center;cursor:pointer;color:#666;font-size:13px;transition:.2s"
+       ondragover="event.preventDefault();this.style.borderColor='#3d5afe'"
+       ondragleave="this.style.borderColor='#c5cae9'"
+       ondrop="handleImportDrop(event)"
+       onclick="document.getElementById('import-file-input').click()">
+    <div style="font-size:28px;margin-bottom:8px">📁</div>
+    <div>拖拽文件到此处，或点击选择</div>
+    <div style="font-size:11px;color:#aaa;margin-top:4px">支持 PDF、Word (.docx) 文件，可多选</div>
+    <input type="file" id="import-file-input" multiple accept=".pdf,.docx,.doc"
+           style="display:none" onchange="handleImportFiles(this.files)">
+  </div>
+  <div id="import-file-list" style="margin:0 16px;font-size:12px;color:#555;max-height:120px;overflow-y:auto"></div>
+  <div style="margin:12px 16px 0;flex-shrink:0">
+    <button id="btn-upload-parse" class="btn btn-primary" style="width:100%"
+            onclick="uploadForParsing()" disabled>上传并解析</button>
+  </div>
+  <div id="import-status" style="margin:8px 16px;font-size:12px;color:#666;min-height:18px"></div>
+  <div id="import-previews" style="flex:1;overflow-y:auto;padding:0 16px 16px"></div>
+  <div style="padding:12px 16px;border-top:1px solid #eee;flex-shrink:0;display:none" id="import-confirm-bar">
+    <button class="btn btn-success" style="width:100%" onclick="confirmImport()">确认全部导入</button>
+  </div>
+</div>
+<div id="import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:1199"
+     onclick="closeImportPanel()"></div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.apr-wrap{max-width:1200px;margin:0 auto;padding:0 16px 60px}
+.apr-header{padding:16px 0 12px;border-bottom:1px solid #eee;margin-bottom:16px}
+.apr-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.apr-back{font-size:12px;color:#999;text-decoration:none}
+.apr-back:hover{color:#333}
+.apr-title{margin:0;font-size:18px;font-weight:700;flex:1}
+.apr-badge{background:#27ae60;color:#fff;border-radius:10px;font-size:12px;padding:2px 10px;margin-left:8px;font-weight:600}
+.apr-date-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.filter-lbl{font-size:13px;color:#666}
+.apr-date-row input{padding:5px 8px;border:1px solid #ddd;border-radius:5px;font-size:13px}
+
+.apr-body{display:flex;gap:16px;align-items:flex-start}
+.apr-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+.apr-sidebar{width:200px;flex-shrink:0;position:sticky;top:80px;background:#f8f9fa;
+             border-radius:8px;padding:14px;border:1px solid #e8e8e8}
+.sb-title{font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+.ssrow{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #f0f0f0;font-size:12px}
+.ssrow:last-child{border-bottom:none}
+.ss-cnt{font-weight:700;color:#fff;border-radius:8px;padding:1px 7px;font-size:11px}
+
+/* ── 分组 ── */
+.sg{margin-bottom:8px}
+.sg-head{display:flex;align-items:center;gap:8px;padding:8px 13px;border-radius:7px;
+         cursor:pointer;user-select:none;border:1px solid #e4e8ed;background:#f5f7fa;
+         margin-bottom:4px}
+.sg-head:hover{filter:brightness(.97)}
+.sg-label{font-size:13px;font-weight:700;flex:1}
+.sg-cnt{font-weight:700;color:#fff;border-radius:8px;padding:1px 8px;font-size:11px}
+.sg-arrow{font-size:10px;color:#aaa}
+.sg-body{display:flex;flex-direction:column;gap:6px;padding-left:6px}
+.sg-body.closed{display:none}
+
+/* 拒绝子分组 */
+.rsg{margin-bottom:6px}
+.rsg-head{font-size:11px;font-weight:700;color:#888;padding:4px 8px;background:#fdf0f0;
+          border-radius:4px;margin-bottom:3px;border-left:3px solid #e74c3c}
+.rsg-body{display:flex;flex-direction:column;gap:5px;padding-left:6px}
+
+/* ── 卡片 ── */
+.ac{border:1px solid #e8e8e8;border-radius:8px;background:#fff;overflow:visible;position:relative}
+.ac.深绿{border-left:4px solid #27ae60}
+.ac.蓝色{border-left:4px solid #3498db}
+.ac.黄色{border-left:4px solid #f1c40f}
+
+/* 卡片头：info区 + 下拉选择器 */
+.ac-head{display:flex;align-items:center;gap:6px;padding:8px 12px;flex-wrap:wrap}
+.ac-info{display:flex;align-items:center;gap:6px;flex:1;min-width:0;cursor:pointer;
+         border-radius:4px;padding:2px 4px;margin:-2px -4px}
+.ac-info:hover{background:#fafafa}
+.ac-name{font-weight:700;font-size:13px;white-space:nowrap}
+.ac-meta{font-size:11px;color:#aaa;white-space:nowrap}
+.ac-verdict{font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;white-space:nowrap}
+.vd-深绿{background:#d5f5e3;color:#1e8449}
+.vd-蓝色{background:#d6eaf8;color:#2471a3}
+.vd-黄色{background:#fef9e7;color:#b7950b}
+.ac-stags{display:flex;flex-wrap:wrap;gap:3px}
+.stag{font-size:10px;font-weight:700;padding:1px 7px;border-radius:8px;background:#e8f4fd;color:#2980b9;white-space:nowrap}
+.stag-拒绝{background:#fde8e8;color:#e74c3c}
+.stag-已入职{background:#d5f5e3;color:#1e8449}
+.stag-谈薪中,.stag-签批中{background:#fff3e0;color:#e67e22}
+.ac-date{font-size:10px;color:#bbb;white-space:nowrap;flex-shrink:0;margin-left:4px}
+.reject-reason-inline{font-size:10px;color:#e74c3c;font-weight:600;
+                       background:#fde8e8;border-radius:6px;padding:1px 6px;white-space:nowrap}
+
+/* ── 需求8(1): 向下拉取选择栏 ── */
+.stage-dd{position:relative;flex-shrink:0}
+.stage-dd-btn{display:flex;align-items:center;gap:4px;padding:4px 10px;
+              border:1px solid #ddd;border-radius:6px;font-size:12px;
+              background:#fff;cursor:pointer;white-space:nowrap;
+              transition:border-color .12s}
+.stage-dd-btn:hover{border-color:#3498db}
+.stage-dd-btn .arrow{font-size:9px;color:#aaa;transition:transform .15s}
+.stage-dd.open .stage-dd-btn .arrow{transform:rotate(180deg)}
+.stage-dd-panel{display:none;position:absolute;top:calc(100% + 4px);right:0;
+                background:#fff;border:1px solid #ddd;border-radius:8px;
+                box-shadow:0 4px 20px rgba(0,0,0,.12);z-index:100;min-width:160px;
+                padding:8px 0}
+.stage-dd.open .stage-dd-panel{display:block}
+.sd-option{display:flex;align-items:center;gap:8px;padding:6px 14px;cursor:pointer;
+           font-size:12px;transition:background .1s}
+.sd-option:hover{background:#f5f0fb}
+.sd-option input{accent-color:#8e44ad;cursor:pointer}
+
+/* ── 卡片展开内容 ── */
+.ac-body{display:none;padding:6px 12px 12px;border-top:1px solid #f0f0f0}
+.ac-body.open{display:block}
+.ev-list{font-size:12px;color:#555;margin:4px 0;padding-left:14px}
+.ev-list.neg{color:#c0392b}
+.ev-list li{margin:2px 0}
+.ac-reason{font-size:11px;color:#777;margin-top:4px;font-style:italic}
+</style>
+
+<script>
+const JOB     = {{ job_name|tojson }};
+const JOB_ID  = {{ job_id }};
+const STAGE_ORDER    = {{ stage_order|tojson }};
+const REJECT_REASONS = {{ reject_reasons|tojson }};
+const STAGE_COLORS   = {
+  '已联系':'#3498db','拒绝':'#e74c3c','已约面':'#9b59b6',
+  '已一面':'#8e44ad','已二面':'#6c3483','谈薪中':'#e67e22',
+  '签批中':'#d35400','已入职':'#27ae60','无标签':'#bdc3c7'
+};
+
+let candidates = {{ candidates|tojson }};
+let _openDd = null;  // 当前打开的 dropdown evaluation_id
+
+// ── 工具 ─────────────────────────────────────────────────
+function getPrimary(c) {
+  const s = c.hr_stages || [];
+  if (!s.length) return '__none__';
+  for (const v of STAGE_ORDER) { if (s.includes(v)) return v; }
+  return s[0];
+}
+
+function sortAll() {
+  return [...candidates].sort((a, b) => {
+    const ai = STAGE_ORDER.indexOf(getPrimary(a));
+    const bi = STAGE_ORDER.indexOf(getPrimary(b));
+    const aIdx = ai < 0 ? -1 : ai, bIdx = bi < 0 ? -1 : bi;
+    if (aIdx !== bIdx) return aIdx - bIdx;
+    if (getPrimary(a) === '拒绝')
+      return (a.hr_reject_reason||'').localeCompare(b.hr_reject_reason||'');
+    return 0;
+  });
+}
+
+// ── 需求8(3): 统计面板 ────────────────────────────────────
+function renderStats() {
+  const counts = {};
+  STAGE_ORDER.forEach(s => counts[s] = 0);
+  counts['无标签'] = 0;
+  candidates.forEach(c => {
+    const s = c.hr_stages || [];
+    if (!s.length) { counts['无标签']++; }
+    else { s.forEach(v => { if (v in counts) counts[v]++; }); }
+  });
+
+  document.getElementById('total-badge').textContent = `共${candidates.length}人`;
+
+  let html = `<div class="ssrow">
+    <span style="color:#999;font-size:12px">无标签</span>
+    <span class="ss-cnt" style="background:#bdc3c7">${counts['无标签']}</span>
+  </div>`;
+  STAGE_ORDER.forEach(s => {
+    if (!counts[s]) return;
+    html += `<div class="ssrow">
+      <span style="color:${STAGE_COLORS[s]};font-size:12px">${s}</span>
+      <span class="ss-cnt" style="background:${STAGE_COLORS[s]}">${counts[s]}</span>
+    </div>`;
+  });
+  document.getElementById('stage-stats').innerHTML = html;
+}
+
+// ── 渲染单张卡片 ──────────────────────────────────────────
+function renderCard(c) {
+  const stages = c.hr_stages || [];
+  const mHtml  = (c.matches||[]).map(m =>
+    `<li><b>${m['条件']||''}</b>${m['条件']&&m['证据']?'：':''}${m['证据']||''}</li>`).join('');
+  const nmHtml = (c.mismatches||[]).map(m =>
+    `<li><b>${m['条件']||''}</b>${m['条件']&&m['原因']?'：':''}${m['原因']||''}</li>`).join('');
+
+  const stageTags = stages.map(s =>
+    `<span class="stag stag-${s}">${s}</span>`).join('');
+
+  const rrInline = (stages.includes('拒绝') && c.hr_reject_reason)
+    ? `<span class="reject-reason-inline">${c.hr_reject_reason}</span>` : '';
+
+  // 需求8(1): 向下拉取选择栏（在卡片头部，可见于折叠状态）
+  const ddOptions = STAGE_ORDER.map(s => {
+    const checked = stages.includes(s) ? 'checked' : '';
+    return `<label class="sd-option" onclick="event.stopPropagation()">
+      <input type="checkbox" ${checked}
+             onchange="stageChange(${c.evaluation_id},'${s}',this.checked)"
+             onclick="event.stopPropagation()">
+      <span style="color:${STAGE_COLORS[s]};font-weight:600">${s}</span>
+    </label>`;
+  }).join('');
+
+  const ddBtnText = stages.length ? stages.join('、') : '选择阶段';
+
+  return `
+  <div class="ac ${c.verdict}" id="ac-${c.evaluation_id}">
+    <div class="ac-head">
+      <span class="ac-info" onclick="toggleCard(${c.evaluation_id})">
+        <span class="ac-name">${c.name||'未知'}</span>
+        <span class="ac-meta">${c.age||'?'}岁</span>
+        <span class="ac-meta">${c.first_degree||''}</span>
+        <span class="ac-meta">${c.school||''}</span>
+        ${['排除','自投'].includes(c.verdict) ? `<span class="ac-verdict vd-${c.verdict}">${c.verdict}</span>` : ''}
+        <span class="ac-stags">${stageTags}</span>
+        ${rrInline}
+        <span class="ac-date">${(c.decision_at||'').slice(0,10)}</span>
+      </span>
+      <!-- 向下拉取选择栏 -->
+      <div class="stage-dd" id="dd-${c.evaluation_id}" onclick="event.stopPropagation()">
+        <div class="stage-dd-btn" onclick="toggleDD(${c.evaluation_id})">
+          <span id="dd-lbl-${c.evaluation_id}" style="max-width:120px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${ddBtnText}</span>
+          <span class="arrow">▼</span>
+        </div>
+        <div class="stage-dd-panel">${ddOptions}</div>
+      </div>
+    </div>
+    <div class="ac-body" id="acb-${c.evaluation_id}">
+      ${c.verdict !== '自投' ? `
+        ${mHtml  ? `<ul class="ev-list">${mHtml}</ul>`      : ''}
+        ${nmHtml ? `<ul class="ev-list neg">${nmHtml}</ul>` : ''}
+        ${c.verdict_reason ? `<div class="ac-reason">${c.verdict_reason}</div>` : ''}
+      ` : ''}
+      <div class="cc-acts" style="margin-top:8px">
+        <button class="act-go" onclick="window.open('/triage/${encodeURIComponent(JOB)}?start_id=${c.evaluation_id}','_blank')">→ 处理台</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── 下拉开关 ─────────────────────────────────────────────
+function toggleDD(evalId) {
+  const el = document.getElementById('dd-' + evalId);
+  if (!el) return;
+  if (_openDd !== null && _openDd !== evalId) {
+    const prev = document.getElementById('dd-' + _openDd);
+    if (prev) prev.classList.remove('open');
+  }
+  el.classList.toggle('open');
+  _openDd = el.classList.contains('open') ? evalId : null;
+}
+// 点击外部关闭
+document.addEventListener('click', () => {
+  if (_openDd !== null) {
+    const el = document.getElementById('dd-' + _openDd);
+    if (el) el.classList.remove('open');
+    _openDd = null;
+  }
+});
+
+// ── 展开/收起 ─────────────────────────────────────────────
+function toggleCard(evalId) {
+  const b = document.getElementById('acb-' + evalId);
+  if (b) b.classList.toggle('open');
+}
+
+// ── 需求8(1) 阶段变更 ────────────────────────────────────
+let _pendingRRId   = null;
+let _pendingRRName = null;
+
+async function stageChange(evalId, stage, checked) {
+  const c = candidates.find(x => x.evaluation_id === evalId);
+  if (!c) return;
+  c.hr_stages = c.hr_stages || [];
+
+  if (checked) {
+    if (!c.hr_stages.includes(stage)) c.hr_stages.push(stage);
+    // 需求8(5): 选了拒绝 → 弹拒绝原因 Modal
+    if (stage === '拒绝') {
+      _pendingRRId   = evalId;
+      _pendingRRName = c.name || '未知';
+      // 先保存无原因版本
+      await saveStage(c, false);
+      openRRModal(c.name, c.hr_reject_reason);
+      return;
+    }
+  } else {
+    c.hr_stages = c.hr_stages.filter(s => s !== stage);
+    if (stage === '拒绝') c.hr_reject_reason = '';
+  }
+  await saveStage(c);
+}
+
+async function saveStage(c, reRender = true) {
+  try {
+    await fetch('/api/hr_stage', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        evaluation_id: c.evaluation_id,
+        job_id: JOB_ID,
+        stages: c.hr_stages,
+        reject_reason: c.hr_reject_reason || '',
+        note: c.hr_note || '',
+      })
+    });
+  } catch(_) {}
+  if (reRender) renderAll();
+}
+
+// ── 需求8(5): 拒绝原因 Modal ─────────────────────────────
+function openRRModal(name, current) {
+  document.getElementById('rr-name').textContent = name || '未知';
+  const currentValues = current ? current.split('、') : [];
+  document.getElementById('rr-options').innerHTML = REJECT_REASONS.map(r =>
+    `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+      <input type="checkbox" name="rr" value="${r}" ${currentValues.includes(r)?'checked':''}>
+      <span>${r}</span>
+    </label>`).join('');
+  // 若当前值包含预设选项之外的内容，回填到自定义输入框
+  const knownSelected = currentValues.filter(v => REJECT_REASONS.includes(v));
+  const customPart = currentValues.filter(v => !REJECT_REASONS.includes(v)).join('、');
+  document.getElementById('rr-custom').value = customPart;
+  document.getElementById('rr-modal').style.display = 'flex';
+}
+
+function cancelRR() {
+  document.getElementById('rr-modal').style.display = 'none';
+  if (_pendingRRId !== null) {
+    const c = candidates.find(x => x.evaluation_id === _pendingRRId);
+    if (c) c.hr_stages = (c.hr_stages||[]).filter(s => s !== '拒绝');
+    saveStage(c);
+  }
+  _pendingRRId = null;
+}
+
+async function confirmRR() {
+  document.getElementById('rr-modal').style.display = 'none';
+  const checked = Array.from(document.querySelectorAll('input[name="rr"]:checked')).map(cb => cb.value);
+  const custom = document.getElementById('rr-custom').value.trim();
+  if (custom) checked.push(custom);
+  if (_pendingRRId !== null) {
+    const c = candidates.find(x => x.evaluation_id === _pendingRRId);
+    if (c) {
+      c.hr_reject_reason = checked.join('、');
+      await saveStage(c);
+    }
+  }
+  _pendingRRId = null;
+}
+
+// ── 需求8(2): 重新渲染（排序 + 分组）────────────────────
+function renderAll() {
+  renderStats();
+
+  const sorted = sortAll();
+  const groups = {};
+  const groupOrder = ['__none__', ...STAGE_ORDER];
+  sorted.forEach(c => {
+    const k = getPrimary(c);
+    (groups[k] = groups[k] || []).push(c);
+  });
+
+  let html = '';
+  groupOrder.forEach(key => {
+    const grp = groups[key];
+    if (!grp || !grp.length) return;
+    const label = key === '__none__' ? '未分配阶段' : key;
+    const color = STAGE_COLORS[key] || '#bdc3c7';
+
+    if (key === '拒绝') {
+      // 需求8(5): 按拒绝原因二次分组
+      const byReason = {};
+      grp.forEach(c => {
+        const r = c.hr_reject_reason || '未填写原因';
+        (byReason[r] = byReason[r] || []).push(c);
+      });
+      html += `<div class="sg">
+        <div class="sg-head" onclick="toggleSg(this)" style="border-left:4px solid #e74c3c">
+          <span class="sg-label">✗ 拒绝</span>
+          <span class="sg-cnt" style="background:#e74c3c">${grp.length}人</span>
+          <span class="sg-arrow">▼</span>
+        </div>
+        <div class="sg-body">`;
+      Object.entries(byReason).forEach(([reason, list]) => {
+        html += `<div class="rsg">
+          <div class="rsg-head">${reason}（${list.length}人）</div>
+          <div class="rsg-body">${list.map(renderCard).join('')}</div>
+        </div>`;
+      });
+      html += `</div></div>`;
+    } else {
+      html += `<div class="sg">
+        <div class="sg-head" onclick="toggleSg(this)" style="border-left:4px solid ${color}">
+          <span class="sg-label">${label}</span>
+          <span class="sg-cnt" style="background:${color}">${grp.length}人</span>
+          <span class="sg-arrow">▼</span>
+        </div>
+        <div class="sg-body">${grp.map(renderCard).join('')}</div>
+      </div>`;
+    }
+  });
+
+  if (!html) html = '<div style="text-align:center;color:#bbb;padding:40px">暂无通过简历</div>';
+  document.getElementById('apr-main').innerHTML = html;
+}
+
+function toggleSg(head) {
+  const body = head.nextElementSibling;
+  const arr  = head.querySelector('.sg-arrow');
+  const open = body.classList.contains('closed');
+  body.classList.toggle('closed', !open);
+  if (arr) arr.textContent = open ? '▼' : '▶';
+}
+
+// 需求8(4): 日期筛选
+function applyDateFilter() {
+  const from = document.getElementById('date-from').value;
+  const to   = document.getElementById('date-to').value;
+  let url = `/approved/${encodeURIComponent(JOB)}`;
+  const p = [];
+  if (from) p.push('date_from=' + from);
+  if (to)   p.push('date_to=' + to);
+  if (p.length) url += '?' + p.join('&');
+  window.location.href = url;
+}
+
+// 初始化
+renderAll();
+
+// ── 导入面板 ──────────────────────────────────────────────
+let _importFiles = [];
+let _importPreviews = [];
+
+function openImportPanel() {
+  const p = document.getElementById('import-panel');
+  p.style.display = 'flex';
+  document.getElementById('import-overlay').style.display = 'block';
+}
+
+function closeImportPanel() {
+  document.getElementById('import-panel').style.display = 'none';
+  document.getElementById('import-overlay').style.display = 'none';
+  _importFiles = [];
+  _importPreviews = [];
+  document.getElementById('import-file-list').innerHTML = '';
+  document.getElementById('import-status').textContent = '';
+  document.getElementById('import-previews').innerHTML = '';
+  document.getElementById('import-confirm-bar').style.display = 'none';
+  document.getElementById('btn-upload-parse').disabled = true;
+}
+
+function handleImportDrop(event) {
+  event.preventDefault();
+  document.getElementById('import-drop-zone').style.borderColor = '#c5cae9';
+  handleImportFiles(event.dataTransfer.files);
+}
+
+function handleImportFiles(fileList) {
+  _importFiles = Array.from(fileList).filter(f => /\.(pdf|docx|doc)$/i.test(f.name));
+  const listEl = document.getElementById('import-file-list');
+  if (!_importFiles.length) {
+    listEl.innerHTML = '<span style="color:#e74c3c">未发现支持的文件格式（PDF/DOCX）</span>';
+    document.getElementById('btn-upload-parse').disabled = true;
+    return;
+  }
+  listEl.innerHTML = _importFiles.map(f =>
+    `<div style="padding:3px 0;border-bottom:1px solid #f0f0f0">📄 ${f.name}</div>`
+  ).join('');
+  document.getElementById('btn-upload-parse').disabled = false;
+}
+
+async function uploadForParsing() {
+  if (!_importFiles.length) return;
+  const btn = document.getElementById('btn-upload-parse');
+  btn.disabled = true;
+  btn.textContent = '解析中…';
+  document.getElementById('import-status').textContent = `正在上传并解析 ${_importFiles.length} 个文件，请稍候…`;
+  document.getElementById('import-previews').innerHTML = '';
+  document.getElementById('import-confirm-bar').style.display = 'none';
+
+  const fd = new FormData();
+  fd.append('job_name', JOB);
+  _importFiles.forEach(f => fd.append('files', f));
+
+  try {
+    const res = await fetch('/api/manual_import/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '上传失败');
+    _importPreviews = data.previews || [];
+    renderImportPreviews();
+    document.getElementById('import-status').textContent = `解析完成，共 ${_importPreviews.length} 份`;
+    if (_importPreviews.some(p => !p.error)) {
+      document.getElementById('import-confirm-bar').style.display = 'block';
+    }
+  } catch (e) {
+    document.getElementById('import-status').textContent = '错误：' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '上传并解析';
+  }
+}
+
+function renderImportPreviews() {
+  const container = document.getElementById('import-previews');
+  if (!_importPreviews.length) { container.innerHTML = ''; return; }
+  container.innerHTML = _importPreviews.map((p, i) => {
+    if (p.error) return `<div style="padding:8px;margin:6px 0;border:1px solid #fcc;border-radius:6px;font-size:12px;color:#e74c3c">⚠ ${p.filename}：${p.error}</div>`;
+    return `<div style="padding:10px;margin:6px 0;border:1px solid #c5cae9;border-radius:6px;font-size:12px;background:#fafbff">
+      <div style="font-weight:700;color:#3d5afe;margin-bottom:6px">📄 ${p.filename}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+        <label>姓名<br><input id="pi-name-${i}" value="${p.name||''}" style="width:100%;box-sizing:border-box;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></label>
+        <label>年龄<br><input id="pi-age-${i}" type="number" value="${p.age||''}" style="width:100%;box-sizing:border-box;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></label>
+        <label>学历<br><input id="pi-deg-${i}" value="${p.first_degree||''}" style="width:100%;box-sizing:border-box;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></label>
+        <label>学校<br><input id="pi-sch-${i}" value="${p.school||''}" style="width:100%;box-sizing:border-box;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></label>
+        <label>专业<br><input id="pi-maj-${i}" value="${p.major||''}" style="width:100%;box-sizing:border-box;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></label>
+        <label>工龄(年)<br><input id="pi-yrs-${i}" type="number" value="${p.total_years||''}" style="width:100%;box-sizing:border-box;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px"></label>
+      </div>
+      ${p.text_preview ? `<div style="margin-top:6px;color:#888;font-size:11px;line-height:1.4;max-height:50px;overflow:hidden">${p.text_preview}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+async function confirmImport() {
+  const items = _importPreviews.map((p, i) => {
+    if (p.error) return null;
+    return {
+      resume_id: p.resume_id,
+      filename: p.filename,
+      name: document.getElementById(`pi-name-${i}`)?.value || p.name,
+      age: parseInt(document.getElementById(`pi-age-${i}`)?.value) || null,
+      first_degree: document.getElementById(`pi-deg-${i}`)?.value || p.first_degree,
+      school: document.getElementById(`pi-sch-${i}`)?.value || p.school,
+      major: document.getElementById(`pi-maj-${i}`)?.value || p.major,
+      total_years: parseInt(document.getElementById(`pi-yrs-${i}`)?.value) || null,
+      file_temp_path: p.file_temp_path,
+      structured_json: p.structured_json || '{}',
+    };
+  }).filter(Boolean);
+
+  const btn = document.querySelector('#import-confirm-bar button');
+  btn.disabled = true; btn.textContent = '导入中…';
+  try {
+    const res = await fetch('/api/manual_import/confirm', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ job_name: JOB, items }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.message || '导入失败');
+    alert(`成功导入 ${data.count} 份简历${data.errors?.length ? '，' + data.errors.length + ' 份失败' : ''}`);
+    closeImportPanel();
+    location.reload();
+  } catch (e) {
+    alert('导入失败：' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '确认全部导入';
+  }
+}
+</script>
+{% endblock %}

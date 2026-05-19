@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+{% block title %}{{ job_name }} · 流水线诊断{% endblock %}
+
+{% block content %}
+<style>
+.audit-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+.health-badge{display:flex;align-items:center;gap:16px;background:#fff;border-radius:12px;padding:16px 24px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
+.health-ring{width:72px;height:72px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#fff;flex-shrink:0}
+.health-ring.green{background:linear-gradient(135deg,#27ae60,#2ecc71)}
+.health-ring.yellow{background:linear-gradient(135deg,#f39c12,#f1c40f)}
+.health-ring.red{background:linear-gradient(135deg,#c0392b,#e74c3c)}
+.health-label{font-size:15px;font-weight:600;color:#2c3e50}
+.health-sub{font-size:12px;color:#777;margin-top:2px}
+
+.dim-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px;margin-top:20px}
+.dim-card{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.07);border-left:5px solid #ccc}
+.dim-card.green{border-left-color:#27ae60}
+.dim-card.yellow{border-left-color:#f39c12}
+.dim-card.red{border-left-color:#e74c3c}
+.dim-title{font-size:15px;font-weight:700;color:#2c3e50;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.dim-icon{font-size:20px}
+.dim-metric{font-size:28px;font-weight:800;margin:6px 0}
+.dim-metric.green{color:#27ae60}.dim-metric.yellow{color:#e67e22}.dim-metric.red{color:#c0392b}
+.finding-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px}
+.finding-item:last-child{border-bottom:none}
+.finding-badge{flex-shrink:0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;height:fit-content}
+.finding-badge.严重{background:#fde8e8;color:#c0392b}
+.finding-badge.警告{background:#fef5e7;color:#d68910}
+.finding-badge.提示{background:#eaf4fb;color:#2980b9}
+.finding-badge.正常{background:#eafaf1;color:#27ae60}
+.finding-text{flex:1;color:#34495e;line-height:1.5}
+.finding-suggest{font-size:11px;color:#888;margin-top:3px;font-style:italic}
+
+.cond-bar-wrap{margin:8px 0}
+.cond-label{font-size:12px;color:#555;margin-bottom:3px;display:flex;justify-content:space-between}
+.cond-bar{height:8px;border-radius:4px;background:#ecf0f1;overflow:hidden}
+.cond-bar-fill{height:100%;border-radius:4px;transition:width 0.6s}
+.hot .cond-bar-fill{background:#e74c3c}
+.warm .cond-bar-fill{background:#e67e22}
+.cool .cond-bar-fill{background:#3498db}
+.cold .cond-bar-fill{background:#bdc3c7}
+
+.sdm-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+.sdm-table th{background:#f8f9fa;padding:8px 10px;text-align:left;font-weight:600;border-bottom:2px solid #dee2e6}
+.sdm-table td{padding:8px 10px;border-bottom:1px solid #f0f0f0}
+.impact-high{color:#c0392b;font-weight:700}
+.impact-medium{color:#e67e22;font-weight:600}
+.impact-low{color:#27ae60}
+
+.yellow-risk-list{font-size:13px}
+.yellow-risk-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f0}
+.risk-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.risk-dot.high{background:#e74c3c}
+.risk-dot.medium{background:#f39c12}
+
+.gen-time{font-size:12px;color:#aaa;margin-top:6px}
+</style>
+
+<div class="audit-header">
+  <div>
+    <h1 class="page-title" style="margin-bottom:4px">{{ job_name }} · 流水线诊断报告</h1>
+    <p class="gen-time">生成于 {{ generated_at }} &nbsp;·&nbsp;
+      <a href="{{ url_for('triage_page', job_name=job_name) }}">进入处理台</a> &nbsp;·&nbsp;
+      <a href="{{ url_for('funnel_detail_page', job_name=job_name) }}">漏斗分析</a>
+    </p>
+  </div>
+  <div class="health-badge">
+    <div class="health-ring {{ health_color }}">{{ health_score }}</div>
+    <div>
+      <div class="health-label">流水线健康分 · {{ health_level }}</div>
+      <div class="health-sub">满分 100 · 综合 5 个诊断维度</div>
+    </div>
+  </div>
+</div>
+
+<div class="dim-grid">
+
+  <!-- 维度1：AI 校准偏差 -->
+  {% set c = calibration %}
+  <div class="dim-card {{ c.severity }}">
+    <div class="dim-title"><span class="dim-icon">🎯</span>AI 校准偏差检测</div>
+    {% if c.total_handled > 0 %}
+      <div style="display:flex;gap:24px;margin-bottom:12px">
+        <div>
+          <div style="font-size:11px;color:#888">深绿被拒率</div>
+          <div class="dim-metric {{ 'red' if c.dg_reject_rate > 20 else ('yellow' if c.dg_reject_rate > 10 else 'green') }}">
+            {{ c.dg_reject_rate }}%
+          </div>
+          <div style="font-size:11px;color:#aaa">{{ c.dg_total }} 人处理</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#888">黄色被通过率</div>
+          <div class="dim-metric {{ 'yellow' if c.yw_approve_rate > 30 else 'green' }}">
+            {{ c.yw_approve_rate }}%
+          </div>
+          <div style="font-size:11px;color:#aaa">{{ c.yw_total }} 人处理</div>
+        </div>
+        {% if c.ex_total > 0 %}
+        <div>
+          <div style="font-size:11px;color:#888">排除被通过</div>
+          <div class="dim-metric red">{{ c.ex_approved }}</div>
+          <div style="font-size:11px;color:#aaa">{{ c.ex_total }} 人处理</div>
+        </div>
+        {% endif %}
+      </div>
+    {% else %}
+      <p style="color:#aaa;font-size:13px">暂无 HR 操作记录，无法计算偏差</p>
+    {% endif %}
+    {% for f in c.findings %}
+    <div class="finding-item">
+      <span class="finding-badge {{ f.level }}">{{ f.level }}</span>
+      <div>
+        <div class="finding-text">{{ f.text }}</div>
+        <div class="finding-suggest">💡 {{ f.suggest }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- 维度2：预筛漏斗异常 -->
+  {% set p = prefilter %}
+  <div class="dim-card {{ p.severity }}">
+    <div class="dim-title"><span class="dim-icon">🔬</span>预筛漏斗异常告警</div>
+    <div style="display:flex;gap:24px;margin-bottom:12px">
+      <div>
+        <div style="font-size:11px;color:#888">预筛通过率</div>
+        <div class="dim-metric {{ 'green' if 25 <= p.pass_rate <= 75 else ('yellow' if 15 <= p.pass_rate <= 85 else 'red') }}">
+          {{ p.pass_rate }}%
+        </div>
+        <div style="font-size:11px;color:#aaa">{{ p.total_eval }}/{{ p.total_attempts }}</div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:#888">预筛拒绝</div>
+        <div class="dim-metric" style="color:#e67e22">{{ p.pf_rejects }}</div>
+        <div style="font-size:11px;color:#aaa">份未进 LLM</div>
+      </div>
+    </div>
+    {% for f in p.findings %}
+    <div class="finding-item">
+      <span class="finding-badge {{ f.level }}">{{ f.level }}</span>
+      <div>
+        <div class="finding-text">{{ f.text }}</div>
+        <div class="finding-suggest">💡 {{ f.suggest }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- 维度3：条件触发频率 -->
+  {% set cf = condition_freq %}
+  <div class="dim-card {{ cf.severity if cf.available else 'green' }}">
+    <div class="dim-title"><span class="dim-icon">📊</span>条件触发频率分析</div>
+    {% if cf.available %}
+      <div style="font-size:12px;color:#888;margin-bottom:10px">基于 {{ cf.total_evals }} 条评估</div>
+      {% for it in cf['items'][:8] %}
+      <div class="cond-bar-wrap {{ it.status }}">
+        <div class="cond-label">
+          <span>{{ it.condition }}</span>
+          <span style="color:{{ '#c0392b' if it.status=='hot' else ('#3498db' if it.status=='cool' else '#bdc3c7') }}">
+            {{ it.rate }}%
+          </span>
+        </div>
+        <div class="cond-bar">
+          <div class="cond-bar-fill" style="width:{{ [it.rate, 100]|min }}%"></div>
+        </div>
+      </div>
+      {% endfor %}
+      {% for f in cf.findings %}
+      <div class="finding-item" style="margin-top:8px">
+        <span class="finding-badge {{ f.level }}">{{ f.level }}</span>
+        <div>
+          <div class="finding-text">{{ f.text }}</div>
+          <div class="finding-suggest">💡 {{ f.suggest }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p style="color:#aaa;font-size:13px">{{ cf.message }}</p>
+    {% endif %}
+  </div>
+
+  <!-- 维度4：证据质量 -->
+  {% set eq = evidence %}
+  <div class="dim-card {{ eq.severity if eq.available else 'green' }}">
+    <div class="dim-title"><span class="dim-icon">🔍</span>证据质量追踪</div>
+    {% if eq.available %}
+      <div style="display:flex;gap:24px;margin-bottom:12px">
+        <div>
+          <div style="font-size:11px;color:#888">空证据率</div>
+          <div class="dim-metric {{ 'red' if eq.empty_rate > 30 else ('yellow' if eq.empty_rate > 15 else 'green') }}">
+            {{ eq.empty_rate }}%
+          </div>
+          <div style="font-size:11px;color:#aaa">{{ eq.empty_evidence }}/{{ eq.total_match_items }} 项</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:#888">高质量证据率</div>
+          <div class="dim-metric {{ 'green' if eq.high_quality_rate >= 40 else 'yellow' }}">
+            {{ eq.high_quality_rate }}%
+          </div>
+          <div style="font-size:11px;color:#aaa">含原文/数据</div>
+        </div>
+      </div>
+      {% for f in eq.findings %}
+      <div class="finding-item">
+        <span class="finding-badge {{ f.level }}">{{ f.level }}</span>
+        <div>
+          <div class="finding-text">{{ f.text }}</div>
+          <div class="finding-suggest">💡 {{ f.suggest }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p style="color:#aaa;font-size:13px">{{ eq.message }}</p>
+    {% endif %}
+  </div>
+
+  <!-- 维度5：黄色堆积风险 -->
+  {% set yr = yellow_pile %}
+  <div class="dim-card {{ yr.severity }}">
+    <div class="dim-title"><span class="dim-icon">⏳</span>黄色堆积风险</div>
+    <div style="display:flex;gap:24px;margin-bottom:12px">
+      <div>
+        <div style="font-size:11px;color:#888">未处理黄色</div>
+        <div class="dim-metric {{ 'red' if yr.total_yellow >= 10 else ('yellow' if yr.total_yellow >= 5 else 'green') }}">
+          {{ yr.total_yellow }}
+        </div>
+        <div style="font-size:11px;color:#aaa">平均等待 {{ yr.avg_wait_days }} 天</div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:#888">高风险（在职）</div>
+        <div class="dim-metric red">{{ yr.high_risk|length }}</div>
+        <div style="font-size:11px;color:#aaa">等待>7天</div>
+      </div>
+    </div>
+    {% if yr.high_risk %}
+    <div class="yellow-risk-list">
+      {% for item in yr.high_risk[:4] %}
+      <div class="yellow-risk-item">
+        <span class="risk-dot high"></span>
+        <span style="font-weight:600">{{ item.name }}</span>
+        <span style="color:#888">{{ item.age }}岁 · 等待 {{ item.days_waiting }} 天 · 在职</span>
+        <a href="{{ url_for('triage_page', job_name=job_name) }}?start_id={{ item.eval_id }}"
+           style="margin-left:auto;font-size:11px;color:#3498db">去处理→</a>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% for f in yr.findings %}
+    <div class="finding-item" style="margin-top:8px">
+      <span class="finding-badge {{ f.level }}">{{ f.level }}</span>
+      <div>
+        <div class="finding-text">{{ f.text }}</div>
+        <div class="finding-suggest">💡 {{ f.suggest }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- 供需敏感性矩阵（全宽）-->
+  {% set sd = supply_demand %}
+  <div class="dim-card green" style="grid-column:1/-1">
+    <div class="dim-title"><span class="dim-icon">📉</span>供需敏感性矩阵</div>
+    {% if sd and sd.available %}
+      <p style="font-size:13px;color:#555;margin-bottom:12px">
+        共收到 <b>{{ sd.total_attempts }}</b> 份简历，预筛通过 <b>{{ sd.total_eval }}</b> 份（{{ sd.current_pass_rate }}%）。
+        下表显示放宽每项硬性条件能扩大多少候选池。
+      </p>
+      <table class="sdm-table">
+        <thead>
+          <tr>
+            <th>条件</th><th>当前设置</th><th>因此条件失败数</th>
+            <th>仅此条件失败数</th><th>放宽可扩大</th><th>影响等级</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cond in sd.conditions %}
+          {% if cond.fail_count > 0 %}
+          <tr>
+            <td><b>{{ cond.label }}</b></td>
+            <td>{{ cond.current_setting }}</td>
+            <td>{{ cond.fail_count }}（{{ cond.fail_rate }}%）</td>
+            <td>{{ cond.single_fail }}</td>
+            <td><b>+{{ cond.expand_if_relaxed }}</b>（+{{ cond.expand_pct }}%）</td>
+            <td class="impact-{{ cond.impact }}">
+              {{ {'high':'⚠ 高影响','medium':'⚡ 中等影响','low':'✓ 低影响','none':'— 无影响'}[cond.impact] }}
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+      <p style="font-size:11px;color:#aaa;margin-top:8px">
+        「仅此条件失败」= 放宽该条件后，这些候选人将直接进入 LLM 评估阶段。
+      </p>
+    {% elif sd %}
+      <p style="color:#aaa;font-size:13px">{{ sd.message }}</p>
+    {% else %}
+      <p style="color:#aaa;font-size:13px">暂无数据</p>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}

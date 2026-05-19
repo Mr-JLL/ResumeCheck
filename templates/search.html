@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+{% block title %}候选人全库搜索{% endblock %}
+
+{% block content %}
+<style>
+.srch-wrap       { max-width: 900px; margin: 0 auto; padding: 20px 16px; }
+.srch-bar        { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.srch-input      { flex: 1; min-width: 220px; padding: 10px 14px;
+                   border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+.srch-input:focus{ outline: none; border-color: #3498db;
+                   box-shadow: 0 0 0 2px rgba(52,152,219,.15); }
+.srch-filters    { display: flex; gap: 8px; align-items: center;
+                   font-size: 13px; flex-wrap: wrap; margin-bottom: 14px; color: #888; }
+.srch-filters select { padding: 6px 10px; border: 1px solid #ccc;
+                        border-radius: 5px; font-size: 13px; }
+.srch-meta       { font-size: 12px; color: #888; margin-bottom: 10px; min-height: 18px; }
+.kw-tag          { display: inline-block; background: #eaf3fb; color: #2980b9;
+                   padding: 1px 7px; border-radius: 8px; font-size: 11px;
+                   font-weight: 600; margin: 0 2px; }
+.missing-alert   { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px;
+                   padding: 9px 14px; font-size: 12px; color: #856404;
+                   margin-bottom: 14px; display: flex; align-items: center;
+                   gap: 10px; flex-wrap: wrap; }
+.result-list     { display: flex; flex-direction: column; gap: 6px; }
+
+/* 卡片折叠行为（扩展 style.css 中的 .cc-body） */
+.cc-body         { display: none; }
+.cc-body.open    { display: block; }
+
+/* 能力指纹展示区 */
+.cc-fp           { font-size: 12px; color: #444; background: #f8f9fa;
+                   border-radius: 5px; padding: 7px 10px; margin: 5px 0 4px;
+                   line-height: 1.7; }
+.cc-fp mark      { background: #fff3a8; color: inherit;
+                   border-radius: 2px; padding: 0 2px; }
+
+/* 来源岗位标签 */
+.cc-src-job      { font-size: 10px; background: #edf2f7; color: #5a6480;
+                   padding: 1px 7px; border-radius: 8px; font-weight: 600;
+                   flex-shrink: 0; }
+
+/* AI精排分数 */
+.cc-ai-score     { display: inline-flex; align-items: center; gap: 6px;
+                   font-size: 12px; font-weight: 700; padding: 3px 10px;
+                   border-radius: 6px; margin: 6px 0 2px; }
+.score-high      { background: #d5f5e3; color: #1a6640; }
+.score-mid       { background: #fef9e7; color: #7d6608; }
+.score-low       { background: #f2f3f4; color: #7f8c8d; }
+
+/* 来源岗位标签颜色（可选）*/
+.cc-head         { cursor: pointer; }
+</style>
+
+<div class="srch-wrap">
+  <h2 style="margin:0 0 14px;font-size:18px;color:#2c3e50">🔍 候选人全库搜索</h2>
+
+  {% if missing_count > 0 %}
+  <div class="missing-alert">
+    <span>⚠ 有 <b>{{ missing_count }}</b> 位候选人尚未生成能力指纹，搜索结果可能不完整。</span>
+    <button id="btn-gen-fp" class="btn btn-primary" style="font-size:12px;padding:4px 12px">
+      立即批量生成
+    </button>
+    <span id="gen-fp-status" style="font-size:11px;color:#555"></span>
+  </div>
+  {% endif %}
+
+  <div class="srch-bar">
+    <input id="srch-input" class="srch-input" type="text"
+           placeholder="描述你需要的人才，例如：有IATF经验做过工艺改善的、压铸背景懂模具设计的…"
+           onkeydown="if(event.key==='Enter')doSearch(false)">
+    <button class="btn btn-success" onclick="doSearch(false)">🔍 搜索</button>
+    <button class="btn btn-primary"  onclick="doSearch(true)"
+            title="用AI对结果打0-100分并排序，更准确，约5-8秒">⚡ AI精排</button>
+  </div>
+
+  <div class="srch-filters">
+    <span>筛选：</span>
+    <select id="filter-job">
+      <option value="">来源岗位：全部</option>
+      {% for job in jobs %}
+      <option value="{{ job.name }}">{{ job.name }}</option>
+      {% endfor %}
+    </select>
+    <select id="filter-verdict">
+      <option value="">候选人状态：全部</option>
+      <option value="深绿">深绿</option>
+      <option value="蓝色">蓝色</option>
+      <option value="黄色">黄色</option>
+      <option value="排除">排除</option>
+    </select>
+  </div>
+
+  <div id="srch-meta" class="srch-meta"></div>
+  <div id="result-list" class="result-list"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const $s = id => document.getElementById(id);
+let lastKeywords = [];
+
+/* ── 工具 ─────────────────────────────────────── */
+function escH(s) {
+  return String(s || '').replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function highlightFp(text, keywords) {
+  if (!text) return '';
+  let out = escH(text);
+  (keywords || []).forEach(kw => {
+    if (!kw) return;
+    const safe = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(safe, 'gi'), m => `<mark>${m}</mark>`);
+  });
+  return out;
+}
+
+/* ── 单张卡片渲染（与驾驶舱完全一致的结构）────── */
+function renderCard(c, keywords) {
+  const mHtml = (c.matches || []).map(m =>
+    `<li><b>${escH(m['条件']||'')}</b>${m['条件']&&m['证据']?'：':''}${escH(m['证据']||'')}</li>`
+  ).join('');
+  const nmHtml = (c.mismatches || []).map(m =>
+    `<li><b>${escH(m['条件']||'')}</b>${m['条件']&&m['原因']?'：':''}${escH(m['原因']||'')}</li>`
+  ).join('');
+
+  /* AI精排分数 */
+  let scoreHtml = '';
+  if (c.match_score != null) {
+    const cls = c.match_score >= 75 ? 'score-high' : c.match_score >= 50 ? 'score-mid' : 'score-low';
+    scoreHtml = `<div class="cc-ai-score ${cls}">
+      ⚡ AI匹配度 ${c.match_score}分
+      ${c.match_reason
+        ? `<span style="font-size:11px;font-weight:400">${escH(c.match_reason)}</span>`
+        : ''}
+    </div>`;
+  }
+
+  /* 能力指纹（关键词高亮） */
+  const fpHtml = c.ability_fingerprint
+    ? `<div class="cc-fp">${highlightFp(c.ability_fingerprint, keywords)}</div>`
+    : '';
+
+  /* 处理台链接：?start_id 与驾驶舱完全相同的定位机制 */
+  const triageUrl = `/triage/${encodeURIComponent(c.source_job_name)}?start_id=${c.evaluation_id}`;
+
+  /* 通过/不通过标记 */
+  let actLabel = '';
+  if (['approved','hired'].includes(c.latest_action)) {
+    actLabel = '<span style="font-size:12px;font-weight:700;color:#27ae60;flex-shrink:0">✓ 通过</span>';
+  } else if (['disapproved','rejected'].includes(c.latest_action)) {
+    actLabel = '<span style="font-size:12px;font-weight:700;color:#e74c3c;flex-shrink:0">✓ 不通过</span>';
+  }
+
+  return `
+  <div class="cc ${escH(c.verdict)}" id="src-cc-${c.evaluation_id}">
+    <div class="cc-head" onclick="toggleCard(${c.evaluation_id})">
+      <span class="cc-name">${escH(c.name || '未知')}</span>
+      <span class="cc-meta">${c.age || '?'}岁</span>
+      <span class="cc-meta">${escH(c.first_degree || '')}</span>
+      <span class="cc-meta">${escH(c.school || '')}</span>
+      <span class="cc-meta">${c.total_years || ''}年</span>
+      <span class="cc-src-job">来自：${escH(c.source_job_name)}</span>
+      <span class="cc-verdict vd-${escH(c.verdict)}">${escH(c.verdict)}</span>
+      ${actLabel}
+    </div>
+    <div class="cc-body" id="ccb-${c.evaluation_id}">
+      ${fpHtml}
+      ${scoreHtml}
+      ${c.verdict === '排除'
+        ? '<span style="font-size:10px;background:#f2f3f4;color:#7f8c8d;padding:2px 8px;border-radius:8px;font-weight:600;display:inline-block;margin:4px 0">🤖 AI 判断排除</span>'
+        : ''}
+      ${mHtml  ? `<ul class="ev-list">${mHtml}</ul>` : ''}
+      ${nmHtml ? `<ul class="ev-list neg">${nmHtml}</ul>` : ''}
+      ${c.verdict_reason
+        ? `<div class="cc-reason">${escH(c.verdict_reason)}</div>` : ''}
+      <div class="cc-acts">
+        <button class="act-go"
+                onclick="window.open('${triageUrl}','_blank')">⚡ 处理台</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function toggleCard(id) {
+  const body = document.getElementById('ccb-' + id);
+  if (body) body.classList.toggle('open');
+}
+
+/* ── 主搜索 ─────────────────────────────────────── */
+async function doSearch(useAiRanking) {
+  const query = $s('srch-input').value.trim();
+  if (!query) { alert('请输入搜索内容'); return; }
+
+  const jobFilter     = $s('filter-job').value;
+  const verdictFilter = $s('filter-verdict').value;
+  const meta  = $s('srch-meta');
+  const list  = $s('result-list');
+
+  meta.textContent = useAiRanking ? '⚡ AI精排中，约5-8秒…' : '搜索中…';
+  list.innerHTML   = '';
+
+  try {
+    const r = await fetch('/api/search/candidates', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        query,
+        source_jobs:    jobFilter     ? [jobFilter]     : [],
+        verdict_filter: verdictFilter ? [verdictFilter] : [],
+        use_ai_ranking: useAiRanking,
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) { meta.textContent = '错误：' + (d.message || '未知错误'); return; }
+
+    lastKeywords = d.keywords || [];
+    const kwHtml = lastKeywords.map(k => `<span class="kw-tag">${escH(k)}</span>`).join('');
+    meta.innerHTML = `共 <b>${d.total}</b> 条结果` +
+      (kwHtml ? `，匹配关键词：${kwHtml}` : '') +
+      (useAiRanking
+        ? ' &nbsp;<span style="color:#8e44ad;font-size:11px;font-weight:700">⚡ AI精排</span>'
+        : '');
+
+    if (!d.candidates || !d.candidates.length) {
+      list.innerHTML =
+        '<div style="text-align:center;color:#bbb;padding:40px">' +
+        '未找到匹配候选人，可以尝试换个描述方式，或先批量生成能力指纹</div>';
+      return;
+    }
+    list.innerHTML = d.candidates.map(c => renderCard(c, lastKeywords)).join('');
+  } catch (e) {
+    meta.textContent = '网络错误：' + e.message;
+  }
+}
+
+/* ── 批量生成指纹 ────────────────────────────────── */
+{% if missing_count > 0 %}
+let _fpTimer = null;
+const btnFp = $s('btn-gen-fp');
+if (btnFp) {
+  btnFp.addEventListener('click', async () => {
+    btnFp.disabled = true;
+    $s('gen-fp-status').textContent = '启动中…';
+    try {
+      const r  = await fetch('/api/admin/generate_fingerprints', {method: 'POST'});
+      const d  = await r.json();
+      if (!d.ok) {
+        $s('gen-fp-status').textContent = d.message;
+        btnFp.disabled = false;
+        return;
+      }
+      $s('gen-fp-status').textContent = '后台生成中，请稍候…';
+      _fpTimer = setInterval(async () => {
+        try {
+          const pr = await fetch('/api/admin/fingerprint_progress');
+          const pd = await pr.json();
+          $s('gen-fp-status').textContent =
+            `已生成 ${pd.done} / ${pd.total}，错误 ${pd.errors}`;
+          if (!pd.running) {
+            clearInterval(_fpTimer);
+            $s('gen-fp-status').textContent +=
+              ' ✓ 完成！刷新页面后搜索结果将更完整。';
+          }
+        } catch (_) {}
+      }, 2000);
+    } catch (e) {
+      $s('gen-fp-status').textContent = '启动失败：' + e.message;
+      btnFp.disabled = false;
+    }
+  });
+}
+{% endif %}
+</script>
+{% endblock %}

@@ -1,0 +1,51 @@
+{
+  "name": "生产项目主管",
+  "target_count": 20,
+  "min_education": "全日制本科",
+  "min_years": 5,
+  "english_required": "no",
+  "english_threshold": "",
+  "industry_required": [
+    "压铸"
+  ],
+  "industry_excluded": [],
+  "requires_management": true,
+  "management_years": 0,
+  "key_responsibilities": "新产品量产达成、量产质量改善、模具/设备/工装管理、技术研发管理",
+  "core_skills": [
+    "量产管理",
+    "新产品达成",
+    "压铸工艺",
+    "模具管理",
+    "产能管理"
+  ],
+  "preferred_skills": [],
+  "extraction_focus": "量产计划与对接、压铸车间技术管理、模具寿命管理、产能数据、技术培训",
+  "rules": [
+    {
+      "name": "学历",
+      "description": "第一学历必须为全日制本科及以上，机械工程等相关专业",
+      "type": "hard"
+    },
+    {
+      "name": "年限",
+      "description": "压铸行业相关工作经验≥5年",
+      "type": "hard"
+    },
+    {
+      "name": "管理",
+      "description": "有管理经验（优先）",
+      "type": "bonus"
+    },
+    {
+      "name": "工艺",
+      "description": "熟练掌握压铸工艺及其设备，具备生产技术管理经验",
+      "type": "soft"
+    },
+    {
+      "name": "能力",
+      "description": "良好沟通与跨部门协调能力",
+      "type": "soft"
+    }
+  ]
+}

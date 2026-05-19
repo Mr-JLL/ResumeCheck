@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>51job 抓取助手</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      width: 300px;
+      padding: 16px;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      font-size: 13px;
+      color: #2c3e50;
+      margin: 0;
+      background: #f8f9fa;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 14px;
+      color: #1f4e78;
+      border-bottom: 2px solid #1f4e78;
+      padding-bottom: 7px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .field { margin-bottom: 10px; }
+    label {
+      display: block;
+      margin-bottom: 3px;
+      font-weight: 600;
+      font-size: 11px;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: .4px;
+    }
+    input {
+      width: 100%;
+      padding: 7px 10px;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    input:focus { border-color: #1f4e78; }
+    .btn-save {
+      width: 100%;
+      padding: 9px;
+      border: none;
+      border-radius: 5px;
+      background: #1f4e78;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background .15s;
+      margin-bottom: 12px;
+    }
+    .btn-save:hover { background: #1a4068; }
+    .btn-save:active { background: #163456; }
+    .status-box {
+      padding: 9px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 12px;
+    }
+    .s-ok   { background: #d5f5e3; color: #1e8449; border: 1px solid #82c882; }
+    .s-err  { background: #fde2e2; color: #c0392b; border: 1px solid #e74c3c; }
+    .s-idle { background: #f0f0f0; color: #666;    border: 1px solid #ddd;    }
+    .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-green { background: #27ae60; }
+    .dot-red   { background: #e74c3c; }
+    .dot-gray  { background: #bbb;    }
+    .tips {
+      font-size: 11px;
+      color: #888;
+      line-height: 1.7;
+      background: #fff;
+      border-radius: 5px;
+      padding: 9px 10px;
+      border: 1px solid #e8e8e8;
+    }
+    .tips b { color: #555; }
+    .tips ol { margin: 5px 0 0 0; padding-left: 16px; }
+    .tips li { margin-bottom: 2px; }
+    .saved-ok { animation: flash .4s ease-out; }
+    @keyframes flash { 0%,100%{opacity:1} 50%{opacity:.3} }
+  </style>
+</head>
+<body>
+  <h2>📋 51job 抓取助手</h2>
+
+  <div class="field">
+    <label>服务器地址</label>
+    <input type="text" id="serverUrl" placeholder="http://192.168.1.100:5000">
+  </div>
+  <div class="field">
+    <label>设备名称（驾驶舱显示用）</label>
+    <input type="text" id="deviceName" placeholder="例：前台电脑、会议室 PC">
+  </div>
+
+  <button class="btn-save" id="btnSave">保存并连接</button>
+
+  <div id="statusBox" class="status-box s-idle">
+    <span class="dot dot-gray" id="statusDot"></span>
+    <span id="statusText">检测中…</span>
+  </div>
+
+  <div class="tips">
+    <b>使用方法：</b>
+    <ol>
+      <li>填写服务器地址并保存</li>
+      <li>扩展自动注册为抓取设备</li>
+      <li>在服务器驾驶舱选择本设备</li>
+      <li>点击「打开浏览器」→ 登录 51job</li>
+      <li>点击「立即抓取」即可在本机操作</li>
+    </ol>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

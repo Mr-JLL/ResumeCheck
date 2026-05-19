@@ -1,0 +1,66 @@
+{
+  "name": "质量工程师",
+  "target_count": 50,
+  "min_education": "全日制本科",
+  "min_years": 2,
+  "english_required": "preferred",
+  "english_threshold": "英语CET-6以上，能作为工作语言（优先项）",
+  "industry_required": [
+    "汽车",
+    "汽车零部件",
+    "压铸"
+  ],
+  "industry_excluded": [],
+  "requires_management": false,
+  "management_years": 0,
+  "key_responsibilities": "新产品质量控制、PPAP/MSA/CPK/PPK、过程质量控制、客诉8D、现场质量培训",
+  "core_skills": [
+    "IATF16949",
+    "VDA6.3",
+    "APQP",
+    "PPAP",
+    "PFMEA",
+    "SPC",
+    "MSA",
+    "8D"
+  ],
+  "preferred_skills": [],
+  "extraction_focus": "PPAP/MSA/CPK/PPK、五大工具、IATF16949、VDA6.3、客诉处理、8D报告、质量改善",
+  "rules": [
+    {
+      "name": "学历",
+      "description": "第一学历必须为全日制本科及以上，机械类专业",
+      "type": "hard"
+    },
+    {
+      "name": "年限",
+      "description": "汽车行业压铸类相关产品经验≥2年",
+      "type": "hard"
+    },
+    {
+      "name": "行业",
+      "description": "汽车/汽车零部件/压铸行业",
+      "type": "hard"
+    },
+    {
+      "name": "体系",
+      "description": "熟悉IATF16949以及VDA6.3要求",
+      "type": "soft"
+    },
+    {
+      "name": "工具",
+      "description": "掌握质量五大工具：APQP/PPAP/PFMEA/SPC/MSA",
+      "type": "soft"
+    },
+    {
+      "name": "英语",
+      "description": "英语CET-6以上，能作为工作语言（优先项）",
+      "type": "bonus"
+    },
+    {
+      "name": "能力",
+      "description": "能独立处理客户反馈并协调内部落实改善",
+      "type": "soft"
+    }
+  ]
+}

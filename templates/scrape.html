@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}抓取并评估 - {{ job_name }}{% endblock %}
+
+{% block content %}
+<h1 class="page-title">抓取并评估：{{ job_name }}</h1>
+
+<div class="info-card">
+  <h3>本岗位 Prompt 摘要</h3>
+  <pre style="white-space: pre-wrap; font-size: 12px; max-height: 220px; overflow-y: auto;">{{ prompt_preview }}{% if prompt_preview|length >= 600 %}...{% endif %}</pre>
+  <a class="btn btn-link" href="{{ url_for('prompt_page', job_name=job_name) }}">查看/编辑完整 Prompt →</a>
+</div>
+
+<div class="info-card">
+  <h3>操作流程</h3>
+  <ol>
+    <li>点「打开浏览器」，会自动启动 Edge 并打开 51job 企业版登录页</li>
+    <li>在浏览器中登录 → 搜索本岗位关键词 → 直到结果列表显示出来</li>
+    <li>回到本页面，设置「抓取数量」，点「开始抓取并评估」</li>
+    <li>系统会自动滚动收集简历 → 保存详情页 → AI 评估，全程可见进度</li>
+    <li>需要中止时随时点「停止」</li>
+  </ol>
+</div>
+
+<div class="form-panel">
+  <label class="form-label">
+    抓取数量
+    <input type="number" id="target-count" value="{{ default_count }}" min="1" max="500">
+  </label>
+  <label class="form-label" style="display: flex; align-items: center; gap: 8px;">
+    <input type="checkbox" id="auto-eval" checked>
+    抓取完成后自动开始 AI 评估（推荐）
+  </label>
+</div>
+
+<div class="action-panel">
+  <button class="btn btn-primary btn-lg" id="btn-open">1. 打开浏览器</button>
+  <button class="btn btn-success btn-lg" id="btn-start">2. 开始抓取并评估</button>
+  <button class="btn btn-lg" id="btn-eval-only" style="background: #2980b9; color: #fff; border-color: #2980b9;">▶ 仅评估已抓取的简历</button>
+  <button class="btn btn-lg" id="btn-stop" style="background: #c0392b; color: #fff; border-color: #c0392b;">⏹ 停止</button>
+</div>
+
+<div class="progress-panel">
+  <div class="progress-line" id="progress-line">阶段：等待中</div>
+  <div class="progress-bar-wrapper">
+    <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
+  </div>
+  <div class="progress-text" id="progress-text">0 / 0</div>
+</div>
+
+<div class="log-panel">
+  <div class="log-title">实时日志</div>
+  <pre id="log-content">[等待操作]</pre>
+</div>
+
+<a class="btn" href="{{ url_for('cards_page', job_name=job_name) }}">查看现有结果</a>
+<a class="btn" href="{{ url_for('dashboard') }}">返回首页</a>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const jobName = {{ job_name|tojson }};
+  let pollTimer = null;
+
+  document.getElementById("btn-open").addEventListener("click", async () => {
+    setStatus("正在启动 Edge 浏览器...");
+    const resp = await fetch("/api/scrape/open_browser", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName})
+    });
+    const data = await resp.json();
+    setStatus(data.message);
+  });
+
+  document.getElementById("btn-start").addEventListener("click", async () => {
+    const count = parseInt(document.getElementById("target-count").value) || 30;
+    const autoEval = document.getElementById("auto-eval").checked;
+    setStatus(`提交任务：抓取 ${count} 份` + (autoEval ? "并自动评估" : "（不评估）"));
+    const resp = await fetch("/api/scrape/start", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        job_name: jobName,
+        target_count: count,
+        auto_evaluate: autoEval
+      })
+    });
+    const data = await resp.json();
+    setStatus(data.message);
+    if (data.ok) startPolling();
+  });
+
+  document.getElementById("btn-eval-only").addEventListener("click", async () => {
+    if (!confirm("将对已抓取的简历进行评估（自动跳过已评估的）。不需要打开浏览器。继续？")) return;
+    setStatus("提交评估任务...");
+    const resp = await fetch("/api/evaluate/start", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName, force_reevaluate: false})
+    });
+    const data = await resp.json();
+    setStatus(data.message);
+    if (data.ok) startPolling();
+  });
+
+  document.getElementById("btn-stop").addEventListener("click", async () => {
+    if (!confirm("确定要停止当前任务？已抓取的简历不会丢失。")) return;
+    const resp = await fetch("/api/scrape/stop", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName})
+    });
+    const data = await resp.json();
+    setStatus(data.message);
+  });
+
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+      const resp = await fetch(`/api/status?job_name=${encodeURIComponent(jobName)}`);
+      const data = await resp.json();
+      updateProgress(data);
+      if (data.log) {
+        document.getElementById("log-content").textContent = data.log;
+        const el = document.getElementById("log-content");
+        el.scrollTop = el.scrollHeight;
+      }
+      if (data.done) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        if (data.error) {
+          setStatus("❌ " + data.error);
+        } else {
+          setStatus("✅ 任务完成");
+          notifyUser("任务完成", `${jobName} 已完成。点击查看结果。`);
+        }
+      }
+    }, 1500);
+  }
+
+  function updateProgress(data) {
+    const phaseLabel = {
+      "idle": "等待中",
+      "scraping": "抓取中",
+      "evaluating": "AI 评估中",
+      "done": "已完成"
+    }[data.phase] || data.phase;
+    document.getElementById("progress-line").textContent = `阶段：${phaseLabel}`;
+    const total = data.total || 0;
+    const cur = data.current || 0;
+    const pct = total > 0 ? (cur / total * 100).toFixed(1) : 0;
+    document.getElementById("progress-bar").style.width = pct + "%";
+    document.getElementById("progress-text").textContent =
+      `${cur} / ${total}` + (data.stop_requested ? "（停止中...）" : "");
+  }
+
+  function setStatus(msg) {
+    const el = document.getElementById("log-content");
+    const time = new Date().toLocaleTimeString();
+    el.textContent += `\n[${time}] ${msg}`;
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function notifyUser(title, body) {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "granted") {
+      new Notification(title, {body});
+    } else if (Notification.permission !== "denied") {
+      Notification.requestPermission().then(p => {
+        if (p === "granted") new Notification(title, {body});
+      });
+    }
+  }
+
+  // 进入页面立即开始轮询，可显示已存在的进行中任务
+  startPolling();
+
+  // 进入页面时尝试请求通知权限
+  if ("Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+</script>
+{% endblock %}

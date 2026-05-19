@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}{{ job_name }} · 不通过简历{% endblock %}
+
+{% block content %}
+<div class="dp-wrap">
+
+  <!-- ══ 顶部标题栏 ══ -->
+  <div class="dp-header">
+    <div class="dp-title-row">
+      <a href="{{ url_for('dashboard') }}" class="dp-back">← 首页</a>
+      <h1 class="dp-title">
+        {{ job_name }} · 不通过简历
+        <span class="dp-total-badge">共{{ total }}人</span>
+      </h1>
+      <a class="btn" href="{{ url_for('cockpit_page', job_name=job_name) }}">驾驶舱</a>
+      <a class="btn" href="{{ url_for('triage_page', job_name=job_name) }}">⚡ 处理台</a>
+    </div>
+    <p class="dp-hint">
+      此处备注仅供参考，<strong>不会被 AI 分析</strong>，不影响简历评分与偏好学习。
+    </p>
+  </div>
+
+  <!-- ══ 候选人卡片列表 ══ -->
+  <div class="dp-list" id="dp-list">
+    {% if not candidates %}
+      <div class="empty-state">暂无不通过的简历</div>
+    {% endif %}
+    {% for c in candidates %}
+    <div class="dc {{ c.verdict }}" id="dc-{{ c.evaluation_id }}">
+      <div class="dc-head">
+        <span class="dc-head-text" onclick="toggleCard({{ c.evaluation_id }})">
+          <span class="dc-name">{{ c.name or '未知' }}</span>
+          <span class="dc-meta">{{ c.age or '?' }}岁</span>
+          <span class="dc-meta">{{ c.first_degree or '' }}</span>
+          <span class="dc-meta">{{ c.school or '' }}</span>
+          {% if c.verdict in ['排除', '自投'] %}<span class="dc-verdict vd-{{ c.verdict }}">{{ c.verdict }}</span>{% endif %}
+          <span class="dc-no-badge">✓ 不通过</span>
+          <span class="dc-date">{{ (c.decision_at or '')[:10] }}</span>
+        </span>
+      </div>
+      <div class="dc-body" id="dcb-{{ c.evaluation_id }}">
+        {% if c.matches %}
+        <ul class="ev-list">
+          {% for m in c.matches %}
+          <li><b>{{ m['条件'] }}</b>{% if m['条件'] and m['证据'] %}：{% endif %}{{ m['证据'] }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if c.mismatches %}
+        <ul class="ev-list neg">
+          {% for m in c.mismatches %}
+          <li><b>{{ m['条件'] }}</b>{% if m['条件'] and m['原因'] %}：{% endif %}{{ m['原因'] }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if c.verdict_reason %}
+        <div class="ac-reason">{{ c.verdict_reason }}</div>
+        {% endif %}
+
+        <div class="dc-acts">
+          <button class="act-ok" onclick="doApprove({{ c.evaluation_id }}, this)">通过</button>
+          <button class="act-go" onclick="openTriage({{ c.evaluation_id }})">⚡ 处理台</button>
+        </div>
+
+        <!-- 需求9: 内联备注输入框（仅展示，不被AI分析）-->
+        <div class="note-section">
+          <div class="note-label">📝 备注（仅供参考，不影响AI评分）</div>
+          <textarea class="note-input" id="note-{{ c.evaluation_id }}"
+                    placeholder="例：薪酬谈不拢 / 技能不够 / 个人原因"
+                    rows="2"
+                    oninput="scheduleNoteSave({{ c.evaluation_id }}, this.value)"
+                    >{{ c.hr_note or '' }}</textarea>
+          <span class="note-saved" id="ns-{{ c.evaluation_id }}"></span>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+/* ── 布局 ── */
+.dp-wrap{max-width:900px;margin:0 auto;padding:0 16px 60px}
+.dp-header{padding:16px 0 12px;border-bottom:1px solid #eee;margin-bottom:16px}
+.dp-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.dp-back{font-size:12px;color:#999;text-decoration:none}
+.dp-back:hover{color:#333}
+.dp-title{margin:0;font-size:18px;font-weight:700;flex:1}
+.dp-total-badge{background:#e74c3c;color:#fff;border-radius:10px;font-size:12px;
+                padding:2px 10px;margin-left:8px;font-weight:600}
+.dp-hint{font-size:12px;color:#888;margin:4px 0 0;padding:6px 10px;
+         background:#fff8e1;border-radius:5px;border-left:3px solid #f1c40f}
+
+.dp-list{display:flex;flex-direction:column;gap:8px}
+
+/* ── 候选人卡片 ── */
+.dc{border:1px solid #e8e8e8;border-radius:8px;background:#fff;overflow:hidden}
+.dc.深绿{border-left:4px solid #27ae60}
+.dc.蓝色{border-left:4px solid #3498db}
+.dc.黄色{border-left:4px solid #f1c40f}
+.dc.排除{border-left:4px solid #ccc;opacity:.75}
+.dc-head{display:flex;align-items:center;padding:9px 12px}
+.dc-head-text{display:flex;align-items:center;gap:7px;flex:1;cursor:pointer;
+              border-radius:4px;padding:2px 4px;margin:-2px -4px}
+.dc-head-text:hover{background:#fafafa}
+.dc-name{font-weight:700;font-size:13px;white-space:nowrap}
+.dc-meta{font-size:11px;color:#aaa;white-space:nowrap}
+.dc-verdict{font-size:11px;font-weight:700;padding:2px 8px;border-radius:8px;white-space:nowrap}
+.vd-深绿{background:#d5f5e3;color:#1e8449}
+.vd-蓝色{background:#d6eaf8;color:#2471a3}
+.vd-黄色{background:#fef9e7;color:#b7950b}
+.vd-排除{background:#f2f3f4;color:#95a5a6}
+.dc-no-badge{font-size:11px;font-weight:700;color:#e74c3c;white-space:nowrap}
+.dc-date{font-size:10px;color:#bbb;white-space:nowrap;margin-left:auto;flex-shrink:0}
+
+.dc-body{display:none;padding:6px 12px 12px;border-top:1px solid #f0f0f0}
+.dc-body.open{display:block}
+
+.ev-list{font-size:12px;color:#555;margin:4px 0;padding-left:14px}
+.ev-list.neg{color:#c0392b}
+.ev-list li{margin:2px 0}
+.ac-reason{font-size:11px;color:#777;margin-top:4px;font-style:italic}
+
+/* ── 备注区 ── */
+.note-section{margin-top:10px}
+.note-label{font-size:11px;font-weight:700;color:#aaa;margin-bottom:5px;
+            text-transform:uppercase;letter-spacing:.5px}
+.note-input{width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;
+            border-radius:6px;font-size:12px;font-family:inherit;resize:vertical;
+            line-height:1.5;transition:border-color .15s}
+.note-input:focus{outline:none;border-color:#3498db;box-shadow:0 0 0 2px rgba(52,152,219,.15)}
+.note-saved{font-size:11px;color:#27ae60;margin-left:6px;vertical-align:middle}
+
+/* ── 操作区 ── */
+.dc-acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.dc-acts button{padding:3px 11px;border:none;border-radius:4px;font-size:12px;
+                cursor:pointer;font-weight:600}
+</style>
+
+<script>
+const JOB = {{ job_name | tojson }};
+
+// ── 展开/收起 ────────────────────────────────────────────
+function toggleCard(evalId) {
+  const b = document.getElementById('dcb-' + evalId);
+  if (b) b.classList.toggle('open');
+}
+
+// ── 通过：调 API 后淡出移除卡片 ─────────────────────────
+async function doApprove(evalId, btn) {
+  btn.disabled = true;
+  btn.textContent = '处理中…';
+  try {
+    const r = await fetch('/api/outcome', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({evaluation_id: evalId, action: 'approved'})
+    });
+    const d = await r.json();
+    if (d.ok !== false) {
+      const card = document.getElementById('dc-' + evalId);
+      if (card) {
+        card.style.transition = 'opacity .3s';
+        card.style.opacity = '0';
+        setTimeout(() => card.remove(), 320);
+      }
+    } else {
+      btn.disabled = false;
+      btn.textContent = '通过';
+      alert(d.message || '操作失败');
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '通过';
+    alert('请求失败：' + e.message);
+  }
+}
+
+// ── 打开处理台 ───────────────────────────────────────────
+function openTriage(evalId) {
+  window.open('/triage/' + encodeURIComponent(JOB) + '?start_id=' + evalId, '_blank');
+}
+
+// ── 需求9: 备注自动保存（防抖 1s）────────────────────────
+const _noteTimers = {};
+
+function scheduleNoteSave(evalId, value) {
+  clearTimeout(_noteTimers[evalId]);
+  _noteTimers[evalId] = setTimeout(() => saveNote(evalId, value), 1000);
+}
+
+async function saveNote(evalId, value) {
+  const nsEl = document.getElementById('ns-' + evalId);
+  try {
+    const r = await fetch('/api/hr_stage/note', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({evaluation_id: evalId, note: value})
+    });
+    const d = await r.json();
+    if (nsEl) {
+      nsEl.textContent = d.ok ? '✓ 已保存' : '保存失败';
+      if (d.ok) setTimeout(() => { nsEl.textContent = ''; }, 2000);
+    }
+  } catch(_) {
+    if (nsEl) nsEl.textContent = '保存失败';
+  }
+}
+</script>
+{% endblock %}

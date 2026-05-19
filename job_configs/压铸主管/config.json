@@ -1,0 +1,51 @@
+{
+  "name": "压铸主管",
+  "target_count": 20,
+  "min_education": "全日制本科",
+  "min_years": 5,
+  "english_required": "no",
+  "english_threshold": "",
+  "industry_required": [
+    "压铸"
+  ],
+  "industry_excluded": [],
+  "requires_management": true,
+  "management_years": 5,
+  "key_responsibilities": "压铸车间日常运营管理、生产计划、员工管理培训、生产过程控制、成本控制",
+  "core_skills": [
+    "压铸车间管理",
+    "生产计划",
+    "员工培训",
+    "成本控制",
+    "压铸工艺"
+  ],
+  "preferred_skills": [],
+  "extraction_focus": "压铸车间管理规模、生产计划与排程、员工培训、成本控制、压铸工艺现场管理",
+  "rules": [
+    {
+      "name": "学历",
+      "description": "第一学历必须为全日制本科及以上",
+      "type": "hard"
+    },
+    {
+      "name": "年限",
+      "description": "压铸管理经验≥5年",
+      "type": "hard"
+    },
+    {
+      "name": "管理",
+      "description": "有团队管理经验和领导能力",
+      "type": "hard"
+    },
+    {
+      "name": "工艺",
+      "description": "熟悉压铸生产工艺流程，对压铸产品生产过程有深入了解",
+      "type": "soft"
+    },
+    {
+      "name": "能力",
+      "description": "具备生产计划和排程能力",
+      "type": "soft"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "name": "市场开拓（欧美系）",
+  "target_count": 30,
+  "min_education": "全日制本科",
+  "min_years": 3,
+  "english_required": "yes_strong",
+  "english_threshold": "英语专业八级，具备商务谈判能力",
+  "industry_required": [
+    "汽车",
+    "汽车零部件",
+    "汽车配件"
+  ],
+  "industry_excluded": [
+    "互联网",
+    "金融",
+    "餐饮",
+    "教育",
+    "房地产"
+  ],
+  "requires_management": false,
+  "management_years": 0,
+  "key_responsibilities": "欧美系汽车客户市场开拓、客户关系维护、市场活动策划",
+  "core_skills": [
+    "欧美市场开发",
+    "汽车B2B",
+    "汽车零部件流程",
+    "商务谈判"
+  ],
+  "preferred_skills": [
+    "国外留学",
+    "国外工作经历"
+  ],
+  "extraction_focus": "客户开拓、市场策划、商务谈判、英语水平、汽车行业经历、留学/海外经历",
+  "rules": [
+    {
+      "name": "学历",
+      "description": "第一学历必须为全日制本科及以上，且为英语相关专业",
+      "type": "hard"
+    },
+    {
+      "name": "英语",
+      "description": "英语专业八级，具备商务谈判能力，能口语+书面流利沟通",
+      "type": "hard"
+    },
+    {
+      "name": "年限",
+      "description": "汽车行业欧美市场开发经验≥3年",
+      "type": "hard"
+    },
+    {
+      "name": "行业",
+      "description": "在汽车/汽车零部件行业从业，熟悉制造业B2B交易模式",
+      "type": "hard"
+    },
+    {
+      "name": "加分",
+      "description": "有国外留学或工作经历",
+      "type": "bonus"
+    }
+  ]
+}

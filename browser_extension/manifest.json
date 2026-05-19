@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "51job 简历抓取助手",
+  "version": "1.0",
+  "description": "连接到简历筛选系统服务器，在本机完成简历抓取，无需安装 Python",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://ehire.51job.com/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "51job 抓取助手"
+  }
+}

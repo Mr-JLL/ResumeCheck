@@ -1,0 +1,52 @@
+{
+  "name": "市场内务",
+  "target_count": 30,
+  "min_education": "全日制本科",
+  "min_years": 1,
+  "english_required": "yes_strong",
+  "english_threshold": "英语听说读写流利，能作为工作语言",
+  "industry_required": [
+    "汽车",
+    "外贸"
+  ],
+  "industry_excluded": [],
+  "requires_management": false,
+  "management_years": 0,
+  "key_responsibilities": "国内外客户订单交付管理、对账收款、样品/量产协调、客户来访接待",
+  "core_skills": [
+    "外贸跟单",
+    "采购",
+    "订单管理",
+    "客户接待",
+    "英语沟通"
+  ],
+  "preferred_skills": [],
+  "extraction_focus": "外贸跟单、采购、订单管理、客户接待、英语水平、汽车外贸经历",
+  "rules": [
+    {
+      "name": "学历",
+      "description": "第一学历必须为全日制本科及以上，英语或商务英语相关专业",
+      "type": "hard"
+    },
+    {
+      "name": "英语",
+      "description": "英语听说读写流利，能作为工作语言",
+      "type": "hard"
+    },
+    {
+      "name": "年限",
+      "description": "外贸跟单/采购经验≥1年（最好≥2年），或汽车外贸经验",
+      "type": "hard"
+    },
+    {
+      "name": "能力",
+      "description": "熟悉市场跟单工作流程",
+      "type": "soft"
+    },
+    {
+      "name": "加分",
+      "description": "汽车外贸经验",
+      "type": "bonus"
+    }
+  ]
+}

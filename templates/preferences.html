@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}偏好学习收件箱{% endblock %}
+
+{% block content %}
+<style>
+.pref-layout{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start}
+@media(max-width:860px){.pref-layout{grid-template-columns:1fr}}
+.pref-card{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.07)}
+.pref-card-title{font-size:15px;font-weight:700;color:#2c3e50;margin-bottom:14px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #f0f0f0;padding-bottom:10px}
+
+.rule-item{border:1px solid #e8ecef;border-radius:8px;padding:14px 16px;margin-bottom:10px;transition:box-shadow 0.2s}
+.rule-item:hover{box-shadow:0 2px 8px rgba(0,0,0,0.1)}
+.rule-text{font-size:14px;font-weight:600;color:#2c3e50;margin-bottom:8px;line-height:1.5}
+.rule-meta{font-size:12px;color:#888;display:flex;gap:12px;margin-bottom:10px}
+.conf-bar{height:5px;border-radius:3px;background:#ecf0f1;overflow:hidden;margin-bottom:10px}
+.conf-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,#27ae60,#2ecc71);transition:width 0.4s}
+.rule-actions{display:flex;gap:8px}
+.btn-confirm{padding:5px 14px;background:#27ae60;color:#fff;border:none;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600}
+.btn-confirm:hover{background:#219a52}
+.btn-dismiss{padding:5px 14px;background:#ecf0f1;color:#666;border:none;border-radius:5px;font-size:12px;cursor:pointer}
+.btn-dismiss:hover{background:#dfe6e9}
+
+.signal-item{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #f5f5f5;font-size:12px}
+.signal-item:last-child{border-bottom:none}
+.sig-badge{flex-shrink:0;padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px;white-space:nowrap}
+.sig-badge.override_reject{background:#fde8e8;color:#c0392b}
+.sig-badge.override_approve{background:#e8f8ef;color:#27ae60}
+.sig-badge.fast_approve{background:#eaf4fb;color:#2980b9}
+.sig-badge.slow_reject{background:#fef5e7;color:#d68910}
+.sig-body{flex:1;color:#555;line-height:1.5}
+.sig-name{font-weight:600;color:#2c3e50}
+.sig-time{color:#bbb;font-size:11px}
+
+.confirmed-rule{padding:8px 12px;background:#eafaf1;border-radius:6px;border-left:3px solid #27ae60;margin-bottom:6px;font-size:13px;color:#27ae60}
+
+.filter-row{display:flex;gap:10px;margin-bottom:18px;flex-wrap:wrap;align-items:center}
+.empty-pref{text-align:center;padding:32px;color:#bbb}
+.empty-pref-icon{font-size:40px;margin-bottom:10px}
+.job-filter-select{padding:6px 12px;border:1px solid #ddd;border-radius:6px;font-size:13px}
+.stat-chips{display:flex;gap:10px;margin-bottom:18px}
+.stat-chip{background:#fff;border-radius:8px;padding:10px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.06);text-align:center}
+.stat-chip-num{font-size:22px;font-weight:800;color:#1f4e78}
+.stat-chip-lbl{font-size:11px;color:#888;margin-top:2px}
+</style>
+
+<h1 class="page-title">🧠 偏好学习收件箱</h1>
+
+<div class="filter-row">
+  <span style="font-size:13px;color:#555">筛选岗位：</span>
+  <select class="job-filter-select" id="job-filter" onchange="location.search='?job='+encodeURIComponent(this.value)">
+    <option value="" {% if not selected_job %}selected{% endif %}>全部岗位</option>
+    {% for j in jobs %}
+    <option value="{{ j.name }}" {% if j.name == selected_job %}selected{% endif %}>{{ j.name }}</option>
+    {% endfor %}
+  </select>
+  {% if selected_job %}
+  <button class="btn" onclick="refreshAnalysis()" id="btn-refresh" style="font-size:12px;padding:5px 12px">
+    🔄 立即分析新信号
+  </button>
+  {% endif %}
+  <div id="refresh-status" style="font-size:12px;color:#27ae60;display:none">分析完成，请刷新页面</div>
+</div>
+
+<div class="stat-chips">
+  <div class="stat-chip">
+    <div class="stat-chip-num">{{ total_signals }}</div>
+    <div class="stat-chip-lbl">累计信号</div>
+  </div>
+  <div class="stat-chip">
+    <div class="stat-chip-num">{{ pending_rules|length }}</div>
+    <div class="stat-chip-lbl">待确认规则</div>
+  </div>
+  <div class="stat-chip">
+    <div class="stat-chip-num">{{ confirmed_rules|length }}</div>
+    <div class="stat-chip-lbl">已确认偏好</div>
+  </div>
+</div>
+
+<div class="pref-layout">
+
+  <!-- 左栏：待确认规则 -->
+  <div>
+    <div class="pref-card">
+      <div class="pref-card-title">🤖 AI 发现的潜在偏好（待你确认）</div>
+
+      {% if pending_rules %}
+        {% for rule in pending_rules %}
+        <div class="rule-item" id="rule-{{ rule.id }}">
+          <div class="rule-text">「{{ rule.rule_text }}」</div>
+          <div class="rule-meta">
+            <span>置信度 {{ (rule.confidence * 100)|int }}%</span>
+            <span>来自 {{ rule.evidence_count }} 个信号</span>
+            {% if rule.job_name %}<span>岗位：{{ rule.job_name }}</span>{% endif %}
+            <span>{{ rule.created_at[:10] }}</span>
+          </div>
+          <div class="conf-bar">
+            <div class="conf-fill" style="width:{{ (rule.confidence * 100)|int }}%"></div>
+          </div>
+          <div class="rule-actions">
+            <button class="btn-confirm" onclick="confirmRule({{ rule.id }})">✓ 确认这个偏好</button>
+            <button class="btn-dismiss" onclick="dismissRule({{ rule.id }})">✕ 这是例外</button>
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty-pref">
+          <div class="empty-pref-icon">🌱</div>
+          <div style="font-size:14px;font-weight:600;color:#555">暂无待确认的偏好规则</div>
+          <div style="font-size:12px;margin-top:6px">
+            当你在处理台做出与 AI 不同的决策时（通过深绿=异常快、拒绝深绿），
+            系统会悄悄记录这些信号，积累 5 个后自动提炼规则供你确认。
+          </div>
+        </div>
+      {% endif %}
+    </div>
+
+    {% if confirmed_rules %}
+    <div class="pref-card" style="margin-top:18px">
+      <div class="pref-card-title">✅ 已确认的偏好规则</div>
+      {% for rule in confirmed_rules %}
+      <div class="confirmed-rule">
+        ✓ {{ rule.rule_text }}
+        {% if rule.job_name %}<span style="opacity:0.7;font-size:11px"> · {{ rule.job_name }}</span>{% endif %}
+      </div>
+      {% endfor %}
+      <p style="font-size:11px;color:#aaa;margin-top:10px">
+        这些规则将在下次 LLM 分析报告中供参考。系统不会自动修改 prompt，
+        建议手动将有价值的规则添加到岗位 prompt 的"参考偏好"部分。
+      </p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- 右栏：近期信号流 -->
+  <div class="pref-card">
+    <div class="pref-card-title">📡 近期决策信号流</div>
+    <p style="font-size:12px;color:#888;margin-bottom:12px">
+      每当你的决策与 AI 建议不同，或表现出特定浏览模式时，系统会记录为信号。
+    </p>
+    {% if recent_signals %}
+      {% for s in recent_signals %}
+      <div class="signal-item">
+        <span class="sig-badge {{ s.signal_type }}">
+          {% if s.signal_type == 'override_reject' %}驳回深绿
+          {% elif s.signal_type == 'override_approve' %}超级通过
+          {% elif s.signal_type == 'fast_approve' %}快速通过
+          {% elif s.signal_type == 'slow_reject' %}犹豫拒绝
+          {% else %}{{ s.signal_type }}{% endif %}
+        </span>
+        <div class="sig-body">
+          <span class="sig-name">{{ s.candidate_name or '未知' }}</span>
+          <span style="color:#aaa"> · {{ s.job_name }}</span>
+          &nbsp;
+          <span style="color:#777">AI:「{{ s.ai_verdict or '?' }}」→ HR:{{ s.hr_action or '?' }}</span>
+          {% if s.rejection_tag %}
+          <span style="color:#e74c3c"> · {{ s.rejection_tag }}</span>
+          {% endif %}
+          {% if s.dwell_seconds %}
+          <span style="color:#bbb"> · 停留{{ s.dwell_seconds }}s</span>
+          {% endif %}
+          <div class="sig-time">{{ s.created_at[:16] }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty-pref">
+        <div class="empty-pref-icon">📭</div>
+        <div style="font-size:13px;color:#999">暂无信号记录</div>
+        <div style="font-size:12px;margin-top:4px">开始在处理台审阅候选人，信号将自动出现在这里</div>
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function confirmRule(id) {
+  const el = document.getElementById('rule-' + id);
+  const r = await fetch('/api/preference/confirm/' + id, {method:'POST'});
+  const d = await r.json();
+  if (d.ok) {
+    el.style.opacity = '0.4';
+    el.style.pointerEvents = 'none';
+    el.querySelector('.rule-actions').innerHTML = '<span style="color:#27ae60;font-size:13px">✓ 已确认</span>';
+  }
+}
+
+async function dismissRule(id) {
+  const el = document.getElementById('rule-' + id);
+  const r = await fetch('/api/preference/dismiss/' + id, {method:'POST'});
+  const d = await r.json();
+  if (d.ok) {
+    el.style.opacity = '0.3';
+    el.style.pointerEvents = 'none';
+    el.querySelector('.rule-actions').innerHTML = '<span style="color:#999;font-size:13px">已标记为例外</span>';
+  }
+}
+
+async function refreshAnalysis() {
+  const job = document.getElementById('job-filter').value;
+  if (!job) { alert('请先选择具体岗位'); return; }
+  const btn = document.getElementById('btn-refresh');
+  btn.textContent = '分析中…';
+  btn.disabled = true;
+  const r = await fetch('/api/audit/refresh/' + encodeURIComponent(job), {method:'POST'});
+  const d = await r.json();
+  btn.textContent = '🔄 立即分析新信号';
+  btn.disabled = false;
+  if (d.ok) {
+    document.getElementById('refresh-status').style.display = 'inline';
+    setTimeout(() => location.reload(), 1200);
+  } else {
+    alert('分析失败：' + (d.message || ''));
+  }
+}
+</script>
+{% endblock %}

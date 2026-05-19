@@ -1,0 +1,882 @@
+{% extends "base.html" %}
+{% block title %}{{ job_name }} · 快速处理台{% endblock %}
+
+{% block content %}
+<div class="triage-header">
+  <div class="triage-title">
+    <h1 class="page-title">{{ job_name }} · 快速处理台</h1>
+    <div class="triage-meta">
+      <span id="triage-counter">加载中…</span>
+      <span class="dot">·</span>
+      <a href="{{ url_for('cards_page', job_name=job_name) }}">概览</a>
+      <span class="dot">·</span>
+      <a href="{{ url_for('cleanup_page', job_name=job_name) }}">清理排除</a>
+      <span class="dot">·</span>
+      <a href="{{ url_for('prompt_page', job_name=job_name) }}">编辑 Prompt</a>
+      <span class="dot">·</span>
+      <a href="{{ url_for('funnel_detail_page', job_name=job_name) }}">岗位分析</a>
+      <span class="dot">·</span>
+      <a href="{{ url_for('audit_page', job_name=job_name) }}" style="color:#8e44ad">🩺 诊断</a>
+    </div>
+  </div>
+
+  <div class="triage-toolbar">
+    <details class="weight-panel">
+      <summary>权重排序（同 verdict 内重排）</summary>
+      <div class="weight-grid">
+        <label>工龄 <span id="w-years-val">{{ default_weights.years }}</span>
+          <input type="range" min="0" max="100" id="w-years" value="{{ default_weights.years }}">
+        </label>
+        <label>学历 <span id="w-education-val">{{ default_weights.education }}</span>
+          <input type="range" min="0" max="100" id="w-education" value="{{ default_weights.education }}">
+        </label>
+        <label>英语 <span id="w-english-val">{{ default_weights.english }}</span>
+          <input type="range" min="0" max="100" id="w-english" value="{{ default_weights.english }}">
+        </label>
+        <label>行业 <span id="w-industry-val">{{ default_weights.industry }}</span>
+          <input type="range" min="0" max="100" id="w-industry" value="{{ default_weights.industry }}">
+        </label>
+        <label>稳定性 <span id="w-stability-val">{{ default_weights.stability }}</span>
+          <input type="range" min="0" max="100" id="w-stability" value="{{ default_weights.stability }}">
+        </label>
+        <button class="btn btn-primary btn-apply-weights" id="btn-apply-weights">应用排序</button>
+      </div>
+    </details>
+
+  </div>
+</div>
+
+<div class="triage-layout">
+  <!-- 左栏：AI 摘要 + 操作 -->
+  <aside class="triage-left">
+    <div id="left-loading" class="empty-state">加载候选人列表…</div>
+
+    <div id="left-content" style="display:none;">
+      <div class="triage-id">
+        <span id="cand-name" class="cand-name">姓名</span>
+        <span id="cand-verdict" class="verdict-badge"></span>
+      </div>
+      <div class="cand-basic">
+        <span id="cand-meta-1"></span>
+      </div>
+      <div class="cand-basic" id="cand-rank-line">
+        <span id="cand-rank-score"></span>
+      </div>
+
+      <div id="cand-cross-jobs" class="cross-jobs"></div>
+      <div id="cand-duplicate" class="dup-flag" style="display:none;"></div>
+      <div id="cand-watermark" class="wm-flag" style="display:none;">⚠ 描述笼统：本简历缺少量化数据</div>
+
+      <!-- 快速导览卡 -->
+      <div id="quick-card" style="background:#f8f9fa;border-radius:8px;padding:12px 14px;margin:10px 0;font-size:13px;border-left:3px solid #ccc">
+        <div id="qc-arc" style="color:#2c3e50;font-weight:600;margin-bottom:5px"></div>
+        <div id="qc-current" style="color:#666;margin-bottom:8px"></div>
+        <div id="qc-chips" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+      </div>
+
+      <div class="ai-section">
+        <div class="ai-title ai-title-pos">✅ 符合</div>
+        <ul id="cand-matches" class="ai-list"></ul>
+      </div>
+      <div class="ai-section">
+        <div class="ai-title ai-title-neg">❌ 不符合</div>
+        <ul id="cand-mismatches" class="ai-list"></ul>
+      </div>
+      <div class="verdict-reason" id="cand-verdict-reason"></div>
+
+      <div class="action-row">
+        <button class="btn-pass" id="btn-pass">通过 ⏎</button>
+        <button class="btn-fail" id="btn-fail">不通过</button>
+      </div>
+      <div class="action-row secondary">
+        <button class="btn btn-link" id="btn-prev">← 上一个</button>
+        <button class="btn btn-link" id="btn-next">下一个 →</button>
+        <button class="btn btn-danger" id="btn-delete">D 删除</button>
+        <button class="btn" id="btn-similar">找相似</button>
+        <button class="btn" id="btn-pool" style="background:#8e44ad;color:#fff">⏰ 人才池</button>
+      </div>
+
+      <!-- 转移至其他岗位 -->
+      <div style="margin-top:10px;border-top:1px solid #e8e8e8;padding-top:10px">
+        <div style="font-size:10px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">转移至其他岗位</div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+          <select id="transfer-job-select" style="flex:1;min-width:110px;padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;color:#333">
+            <option value="">选择目标岗位…</option>
+          </select>
+          <select id="transfer-verdict-select" style="width:72px;padding:5px 7px;border:1px solid #ddd;border-radius:5px;font-size:12px;color:#333">
+            <option value="深绿">深绿</option>
+            <option value="蓝色" selected>蓝色</option>
+            <option value="黄色">黄色</option>
+          </select>
+          <button id="btn-transfer" onclick="openTransferConfirm()"
+                  style="padding:5px 11px;border:none;border-radius:5px;background:#2980b9;color:#fff;font-size:12px;cursor:pointer;font-weight:600">
+            转移
+          </button>
+        </div>
+        <div id="transfer-status" style="font-size:11px;color:#888;margin-top:4px;min-height:16px"></div>
+      </div>
+
+      <details class="note-box">
+        <summary>📝 候选人备注</summary>
+        <textarea id="cand-note" rows="3" placeholder="例：电话联系，对方期望薪资 25K"></textarea>
+      </details>
+
+      <div id="action-status" class="action-status"></div>
+
+      <div id="similar-panel" class="similar-panel" style="display:none;">
+        <div class="similar-title">相似候选人</div>
+        <ul id="similar-list" class="similar-list"></ul>
+      </div>
+
+      <!-- AI 参考依据面板：Few-Shot 案例 + 已确认偏好 -->
+      <details id="ai-ref-panel" style="margin-top:12px;font-size:12px;border:1px solid #e0e0e0;border-radius:8px;padding:0;">
+        <summary style="padding:8px 12px;cursor:pointer;font-weight:600;color:#555;list-style:none;display:flex;align-items:center;gap:6px;user-select:none;">
+          <span>📚</span><span>本次 AI 参考了哪些依据</span>
+          <span id="ai-ref-badge" style="background:#3498db;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;display:none;"></span>
+        </summary>
+        <div style="padding:10px 12px 12px;">
+          <div id="few-shot-section" style="display:none;margin-bottom:10px;">
+            <div style="font-weight:600;color:#27ae60;margin-bottom:6px;">🏆 历史录用参考案例</div>
+            <ul id="few-shot-list" style="margin:0;padding:0 0 0 14px;color:#555;line-height:1.8;"></ul>
+          </div>
+          <div id="pref-section" style="display:none;">
+            <div style="font-weight:600;color:#8e44ad;margin-bottom:6px;">🎯 已确认的筛选偏好</div>
+            <ul id="pref-list" style="margin:0;padding:0 0 0 14px;color:#555;line-height:1.8;"></ul>
+          </div>
+          <div id="ai-ref-empty" style="color:#aaa;font-size:11px;">暂无录用案例或已确认偏好，AI 将仅依据岗位规则判断。</div>
+        </div>
+      </details>
+    </div>
+
+    <!-- 转移岗位确认弹窗 -->
+    <div id="transfer-modal" class="modal-mask" style="display:none;">
+      <div class="modal-box" style="width:360px;max-width:95vw">
+        <div class="modal-title" style="color:#2980b9">↗ 确认转移至其他岗位</div>
+        <div id="transfer-modal-msg" style="font-size:13px;color:#555;margin-bottom:12px"></div>
+        <div id="transfer-conflict-warn" style="display:none;background:#fff3cd;border:1px solid #ffc107;
+             border-radius:5px;padding:8px 10px;font-size:12px;color:#856404;margin-bottom:12px"></div>
+        <p style="font-size:11px;color:#888;margin:0 0 14px">原岗位此候选人将自动标为<b>不通过</b>。</p>
+        <div class="modal-actions">
+          <button class="btn" id="btn-transfer-cancel">取消</button>
+          <button class="btn" id="btn-transfer-confirm"
+                  style="background:#2980b9;color:#fff;border-color:#2980b9;font-weight:700">确认转移</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 不通过时的原因标签弹窗 -->
+    <div id="reject-modal" class="modal-mask" style="display:none;">
+      <div class="modal-box">
+        <div class="modal-title">填写不通过原因</div>
+        <input type="text" id="reject-tag-custom" placeholder="输入不通过原因（如：管理经验不足）">
+        <div class="modal-actions">
+          <button class="btn" id="btn-reject-cancel">取消</button>
+          <button class="btn btn-fail" id="btn-reject-confirm">确认不通过</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 深绿候选人不通过时的专属轻量弹窗（用于偏好信号采集） -->
+    <div id="deepgreen-reject-modal" class="modal-mask" style="display:none;">
+      <div class="modal-box" style="width:340px;max-width:95vw">
+        <div class="modal-title" style="color:#e74c3c">
+          ⚠ 驳回 AI 强烈推荐的候选人
+        </div>
+        <p style="font-size:12px;color:#888;margin:0 0 12px">
+          AI 将本候选人评为「深绿」，你仍选择不通过。<br>
+          请快速标记原因，帮助 AI 学习你的真实偏好：
+        </p>
+        <div id="dg-tag-options" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px"></div>
+        <input type="text" id="dg-tag-custom" placeholder="其他原因（可选填写）"
+               style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:6px;
+                      font-size:13px;box-sizing:border-box;margin-bottom:12px">
+        <div class="modal-actions">
+          <button class="btn" id="btn-dg-cancel">取消</button>
+          <button class="btn btn-fail" id="btn-dg-confirm">确认不通过</button>
+        </div>
+      </div>
+    </div>
+  <!-- 人才池弹窗 -->
+  <div id="pool-modal" class="modal-mask" style="display:none;">
+    <div class="modal-box" style="width:340px;max-width:95vw">
+      <div style="font-size:15px;font-weight:700;color:#2c3e50;margin-bottom:14px">
+        ⏰ <span id="pm-title">放入人才池</span>
+      </div>
+      <div style="font-size:12px;color:#777;margin-bottom:12px">候选人：<b id="pm-name"></b></div>
+      <label style="display:block;font-size:12px;color:#555;margin-bottom:4px">原因</label>
+      <select id="pm-reason" style="width:100%;padding:7px 10px;border:1px solid #ccc;
+              border-radius:6px;font-size:13px;margin-bottom:10px">
+        <option value="">请选择原因</option>
+        <option>在职观望</option><option>薪资差距</option><option>暂无意向</option>
+        <option>失联待重试</option><option>地点问题</option><option>其他</option>
+      </select>
+      <label style="display:block;font-size:12px;color:#555;margin-bottom:4px">再联系日期</label>
+      <input type="date" id="pm-date" style="width:100%;padding:7px 10px;border:1px solid #ccc;
+             border-radius:6px;font-size:13px;margin-bottom:10px;box-sizing:border-box">
+      <label style="display:block;font-size:12px;color:#555;margin-bottom:4px">备注（可选）</label>
+      <textarea id="pm-note" rows="2" placeholder="例：期望薪资 25K，可考虑 3 个月后再谈"
+        style="width:100%;padding:7px 10px;border:1px solid #ccc;border-radius:6px;
+               font-size:12px;resize:vertical;box-sizing:border-box;margin-bottom:14px"></textarea>
+      <div class="modal-actions">
+        <button class="btn" id="btn-pool-cancel">取消</button>
+        <button class="btn" id="btn-pool-confirm"
+                style="background:#8e44ad;color:#fff;border-color:#8e44ad">确认放入</button>
+      </div>
+    </div>
+  </div>
+
+  </aside>
+
+  <!-- 右栏：完整简历 HTML 内嵌 -->
+  <section class="triage-right">
+    <iframe id="resume-iframe" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const JOB_NAME = {{ job_name|tojson }};
+
+let candidates = [];
+let idx = 0;
+let isInputFocused = false;
+let _showTime = null;
+let _fewShotCases = [];
+let _confirmedPrefs = [];
+
+function $(id){ return document.getElementById(id); }
+
+function getWeights(){
+  return {
+    years: parseInt($("w-years").value),
+    education: parseInt($("w-education").value),
+    english: parseInt($("w-english").value),
+    industry: parseInt($("w-industry").value),
+    stability: parseInt($("w-stability").value),
+  };
+}
+
+document.querySelectorAll("input[type=range]").forEach(r=>{
+  r.addEventListener("input", ()=>{
+    $(r.id+"-val").textContent = r.value;
+  });
+});
+
+$("btn-apply-weights").addEventListener("click", ()=>{
+  loadList();
+});
+
+function renderAiRefPanel(){
+  const fsSection = $("few-shot-section");
+  const fsList = $("few-shot-list");
+  const prefSection = $("pref-section");
+  const prefList = $("pref-list");
+  const emptyMsg = $("ai-ref-empty");
+  const badge = $("ai-ref-badge");
+
+  const totalCount = _fewShotCases.length + _confirmedPrefs.length;
+  if (totalCount === 0){
+    fsSection.style.display = "none";
+    prefSection.style.display = "none";
+    emptyMsg.style.display = "block";
+    badge.style.display = "none";
+    return;
+  }
+  emptyMsg.style.display = "none";
+  badge.textContent = totalCount;
+  badge.style.display = "inline";
+
+  if (_fewShotCases.length > 0){
+    fsSection.style.display = "block";
+    fsList.innerHTML = _fewShotCases.map(ex => {
+      const roles = (ex.recent_roles || []).join(" → ") || "未明确";
+      const inds = (ex.industries || []).join(",") || "未知";
+      return `<li><b>${escapeHtml(ex.name)}</b> · ${escapeHtml(ex.first_degree)} · ${escapeHtml(String(ex.total_years))}年 · 英语:${escapeHtml(ex.english_level)} · 行业:${escapeHtml(inds)} · ${escapeHtml(roles)}</li>`;
+    }).join("");
+  } else {
+    fsSection.style.display = "none";
+  }
+
+  if (_confirmedPrefs.length > 0){
+    prefSection.style.display = "block";
+    prefList.innerHTML = _confirmedPrefs.map(p => {
+      const pct = Math.round(p.confidence * 100);
+      return `<li>${escapeHtml(p.rule_text)} <span style="color:#8e44ad;font-size:11px">(置信度 ${pct}%·${p.evidence_count}个样本)</span></li>`;
+    }).join("");
+  } else {
+    prefSection.style.display = "none";
+  }
+}
+
+async function loadList(){
+  const w = getWeights();
+  const url = `/api/triage/list?job_name=${encodeURIComponent(JOB_NAME)}`
+            + `&weights=${encodeURIComponent(JSON.stringify(w))}`;
+  $("left-loading").style.display = "block";
+  $("left-content").style.display = "none";
+  $("left-loading").textContent = "加载候选人列表…";
+  const r = await fetch(url);
+  const d = await r.json();
+  if (!d.ok){
+    $("left-loading").textContent = "加载失败：" + (d.message||"");
+    return;
+  }
+  candidates = d.candidates || [];
+  _fewShotCases = d.few_shot_cases || [];
+  _confirmedPrefs = d.confirmed_preferences || [];
+  renderAiRefPanel();
+  if (candidates.length === 0){
+    $("left-loading").textContent = "本岗位暂无待处理候选人。";
+    updateCounter();
+    return;
+  }
+  // 若 URL 带 ?start_id=<evaluation_id>，直接定位到该候选人
+  const startId = parseInt(new URLSearchParams(window.location.search).get("start_id"));
+  if (startId) {
+    const found = candidates.findIndex(c => c.evaluation_id === startId);
+    idx = found >= 0 ? found : 0;
+  } else {
+    // 默认：找第一个尚未处理的
+    const first = candidates.findIndex(c =>
+      !c.latest_action || (c.latest_action !== "approved" && c.latest_action !== "disapproved"
+                           && c.latest_action !== "hired" && c.latest_action !== "rejected"));
+    idx = first >= 0 ? first : 0;
+  }
+  show();
+}
+
+function updateCounter(){
+  const total = candidates.length;
+  const handled = candidates.filter(c =>
+    c.latest_action === "approved" || c.latest_action === "disapproved"
+    || c.latest_action === "hired" || c.latest_action === "rejected").length;
+  $("triage-counter").textContent = `共 ${total} 份 · 已处理 ${handled} · 当前 ${total>0?idx+1:0}/${total}`;
+}
+
+function show(){
+  if (candidates.length === 0) return;
+  if (idx < 0) idx = 0;
+  if (idx >= candidates.length) idx = candidates.length - 1;
+  $("left-loading").style.display = "none";
+  $("left-content").style.display = "block";
+
+  const c = candidates[idx];
+  $("cand-name").textContent = c.name || "(未知)";
+  const v = c.verdict || "";
+  const vb = $("cand-verdict");
+  vb.textContent = v;
+  vb.className = "verdict-badge v-" + v;
+
+  const meta = [];
+  if (c.age) meta.push(c.age + "岁");
+  if (c.first_degree) meta.push(c.first_degree);
+  if (c.school) meta.push(c.school);
+  if (c.major) meta.push(c.major);
+  if (c.english_level) meta.push("英语:" + c.english_level);
+  if (c.total_years) meta.push(c.total_years + "年经验");
+  $("cand-meta-1").textContent = meta.join(" · ");
+
+  const rs = c.rank_score;
+  $("cand-rank-score").textContent = (rs || rs === 0)
+    ? `权重综合分：${rs}/100` : "";
+
+  // 跨岗位状态
+  loadCrossJobs(c.resume_id);
+
+  // duplicate
+  if (c.duplicate_of_id){
+    $("cand-duplicate").style.display = "block";
+    $("cand-duplicate").textContent = `⚠ 疑似与已有候选人 #${c.duplicate_of_id} 重复`;
+  } else {
+    $("cand-duplicate").style.display = "none";
+  }
+
+  // 水分侦测
+  const reason = c.verdict_reason || "";
+  if (reason.includes("[描述笼统]")){
+    $("cand-watermark").style.display = "block";
+  } else {
+    $("cand-watermark").style.display = "none";
+  }
+
+  // 符合 / 不符合
+  const matches = c.matches || [];
+  const ml = $("cand-matches");
+  ml.innerHTML = matches.length === 0
+    ? `<li class="empty-line">（AI 未找到明确符合项）</li>`
+    : matches.map(m => {
+        const cond = m["条件"] || "";
+        const ev = m["证据"] || "";
+        return `<li><b>${escapeHtml(cond)}</b>${cond&&ev?"：":""}<span class="evidence-text">${escapeHtml(ev)}</span></li>`;
+      }).join("");
+
+  const mismatches = c.mismatches || [];
+  const xl = $("cand-mismatches");
+  xl.innerHTML = mismatches.length === 0
+    ? `<li class="empty-line">（无不符合项）</li>`
+    : mismatches.map(m => {
+        const cond = m["条件"] || "";
+        const rs = m["原因"] || "";
+        return `<li><b>${escapeHtml(cond)}</b>${cond&&rs?"：":""}<span class="evidence-text">${escapeHtml(rs)}</span></li>`;
+      }).join("");
+
+  $("cand-verdict-reason").textContent = reason
+    ? "AI 结论：" + reason.replace("[描述笼统]","").trim() : "";
+
+  // 备注
+  $("cand-note").value = c.latest_note || "";
+
+  // 状态
+  const lbl = labelFor(c.latest_action);
+  $("action-status").textContent = lbl ? "当前状态：" + lbl : "";
+  $("action-status").className = "action-status " + (c.latest_action ? "as-"+c.latest_action : "");
+
+  // 快速导览卡
+  renderQuickCard(c);
+
+  // 记录展示时间（用于 dwell time）
+  _showTime = Date.now();
+
+  // 关闭相似面板
+  $("similar-panel").style.display = "none";
+
+  // 加载右栏简历：有 PDF 则直接内嵌原始文件，否则回退到提取的 HTML
+  if (c.resume_id) {
+    if (c.has_pdf) {
+      $("resume-iframe").src = `/api/resume/view/${encodeURIComponent(c.resume_id)}/pdf`;
+    } else {
+      $("resume-iframe").src = `/api/resume_html/${encodeURIComponent(c.resume_id)}`;
+    }
+  } else {
+    $("resume-iframe").src = "about:blank";
+  }
+
+  updateCounter();
+}
+
+function renderQuickCard(c) {
+  const qc = $("quick-card");
+  const arc = $("qc-arc");
+  const cur = $("qc-current");
+  const chips = $("qc-chips");
+
+  // 职业弧线（从 structured_json 提取，若无则降级）
+  let arcText = "";
+  let currentText = "";
+  try {
+    if (c._structured) {
+      const wh = c._structured.work_history || [];
+      if (wh.length > 0) {
+        const latest = wh[0];
+        const oldest = wh[wh.length - 1];
+        const latestRole = (latest.role || "").slice(0, 10);
+        const latestCo = (latest.company || "").slice(0, 12);
+        const oldestRole = (oldest.role || "").slice(0, 10);
+        arcText = wh.length === 1
+          ? latestRole + "·" + latestCo
+          : oldestRole + " → " + latestRole;
+        if (latest.is_current) {
+          const mo = latest.months;
+          currentText = "📍 当前在职：" + latestCo + (mo ? "（" + (mo/12).toFixed(1) + "年）" : "");
+        } else {
+          currentText = "📌 离职 · 上家：" + latestCo;
+        }
+      }
+    }
+  } catch(e) {}
+
+  arc.textContent = arcText || ((c.total_years || "") + (c.total_years ? "年经验" : ""));
+  cur.textContent = currentText;
+
+  // 匹配/不匹配芯片
+  chips.innerHTML = "";
+  const matchItems = (c.matches || []).slice(0, 3);
+  const mismatchItems = (c.mismatches || []).slice(0, 2);
+
+  matchItems.forEach(m => {
+    const text = (m["条件"] || m["证据"] || "").slice(0, 10);
+    if (!text) return;
+    const span = document.createElement("span");
+    span.textContent = "✓ " + text;
+    span.style.cssText = "background:#e8f8ef;color:#27ae60;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600";
+    chips.appendChild(span);
+  });
+
+  mismatchItems.forEach(m => {
+    const text = (m["条件"] || "").slice(0, 10);
+    if (!text) return;
+    const span = document.createElement("span");
+    span.textContent = "✗ " + text;
+    span.style.cssText = "background:#fde8e8;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600";
+    chips.appendChild(span);
+  });
+
+  // 与录用者相似度
+  const simEl = document.getElementById("qc-sim");
+  if (simEl) simEl.remove();
+  if (c.hired_similarity != null) {
+    const pct = Math.max(0, Math.min(100, c.hired_similarity));
+    const filled = Math.round(pct / 20);
+    const bar = "█".repeat(filled) + "░".repeat(5 - filled);
+    const simSpan = document.createElement("div");
+    simSpan.id = "qc-sim";
+    simSpan.style.cssText = "font-size:11px;color:#666;margin-top:6px";
+    simSpan.innerHTML = `与录用者相似 <span style="font-family:monospace;color:${pct>=60?'#27ae60':pct>=40?'#e67e22':'#aaa'}">${bar}</span> <b>${pct}%</b>`;
+    chips.after(simSpan);
+  }
+
+  // 边框颜色跟随 verdict
+  const colors = {"深绿":"#27ae60","蓝色":"#3498db","黄色":"#f39c12","排除":"#e74c3c"};
+  qc.style.borderLeftColor = colors[c.verdict] || "#ccc";
+}
+
+function escapeHtml(s){
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, ch=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+  }[ch]));
+}
+
+function labelFor(a){
+  return ({
+    "approved":"已通过","disapproved":"已不通过",
+    "hired":"已录用","rejected":"已淘汰",
+    "contacted":"已联系","interviewed":"已面试",
+    "skipped":"跳过","note_only":"已备注"
+  })[a] || "";
+}
+
+async function loadCrossJobs(resume_id){
+  const el = $("cand-cross-jobs");
+  el.innerHTML = "";
+  if (!resume_id) return;
+  try {
+    const r = await fetch(`/api/triage/cross_jobs/${encodeURIComponent(resume_id)}`
+                          + `?exclude_job_name=${encodeURIComponent(JOB_NAME)}`);
+    const d = await r.json();
+    if (!d.ok || !d.items || d.items.length === 0) return;
+    el.innerHTML = "<div class='cross-jobs-title'>跨岗位状态：</div>" +
+      d.items.map(it => {
+        const tag = labelFor(it.latest_action);
+        return `<span class="cross-job-pill v-${it.verdict}">${escapeHtml(it.job_name)}：${escapeHtml(it.verdict||"")}${tag?" / "+tag:""}</span>`;
+      }).join(" ");
+  } catch(e){ /* ignore */ }
+}
+
+async function recordOutcome(action, rejection_tag){
+  const c = candidates[idx];
+  if (!c) return;
+  const note = $("cand-note").value.trim();
+  const dwell = _showTime ? Math.round((Date.now() - _showTime) / 1000) : null;
+  const body = {
+    evaluation_id: c.evaluation_id,
+    action: action,
+    note: note || null,
+    dwell_seconds: dwell,
+  };
+  if (rejection_tag) body.rejection_tag = rejection_tag;
+  try {
+    const r = await fetch("/api/outcome", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!d.ok){ alert("保存失败：" + (d.message||"")); return; }
+    c.latest_action = action;
+    c.latest_note = note;
+    show();
+    setTimeout(next, 80);
+  } catch(e){ alert("网络错误：" + e.message); }
+}
+
+async function saveNote(){
+  const c = candidates[idx];
+  if (!c) return;
+  const note = $("cand-note").value.trim();
+  try {
+    await fetch("/api/outcome/note", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({evaluation_id: c.evaluation_id, note: note})
+    });
+    c.latest_note = note;
+  } catch(e){ /* ignore */ }
+}
+
+$("cand-note").addEventListener("focus", ()=>{ isInputFocused = true; });
+$("cand-note").addEventListener("blur", ()=>{ isInputFocused = false; saveNote(); });
+
+function prev(){ if (idx > 0){ idx--; show(); } }
+function next(){ if (idx < candidates.length - 1){ idx++; show(); } else { updateCounter(); } }
+
+$("btn-pass").addEventListener("click", ()=> recordOutcome("approved"));
+$("btn-fail").addEventListener("click", openRejectModal);
+$("btn-prev").addEventListener("click", prev);
+$("btn-next").addEventListener("click", next);
+$("btn-delete").addEventListener("click", deleteCurrent);
+$("btn-similar").addEventListener("click", showSimilar);
+
+async function deleteCurrent(){
+  const c = candidates[idx];
+  if (!c) return;
+  try {
+    const r = await fetch("/api/job/cleanup/delete", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        job_name: JOB_NAME,
+        items: [{evaluation_id: c.evaluation_id, resume_id: c.resume_id}]
+      })
+    });
+    const d = await r.json();
+    if (!d.ok){ alert("删除失败：" + (d.message||"")); return; }
+    // 从本地数组移除
+    candidates.splice(idx, 1);
+    if (candidates.length === 0){
+      $("left-loading").style.display = "block";
+      $("left-loading").textContent = "全部处理完毕。";
+      $("left-content").style.display = "none";
+      $("resume-iframe").src = "about:blank";
+      updateCounter();
+      return;
+    }
+    if (idx >= candidates.length) idx = candidates.length - 1;
+    show();
+  } catch(e){ alert("网络错误：" + e.message); }
+}
+
+function showSimilar(){
+  $("similar-panel").style.display = "block";
+  $("similar-list").innerHTML = "<li class='empty-line'>「找相似」功能暂不可用。</li>";
+}
+
+// 不通过弹窗
+function openRejectModal(){
+  const c = candidates[idx];
+  if (c && c.verdict === "深绿") {
+    openDeepGreenRejectModal();
+    return;
+  }
+  $("reject-modal").style.display = "flex";
+  $("reject-tag-custom").value = "";
+  setTimeout(() => $("reject-tag-custom").focus(), 50);
+}
+
+const DG_TAGS = ["跳槽频繁","工作经历太普通","背景不匹配","无法核实关键经历","直觉不好"];
+let _dgSelectedTag = null;
+
+function openDeepGreenRejectModal(){
+  _dgSelectedTag = null;
+  const opts = $("dg-tag-options");
+  opts.innerHTML = DG_TAGS.map(t =>
+    `<button class="tag-opt" data-tag="${escapeHtml(t)}" style="padding:5px 12px;border:1px solid #ddd;border-radius:16px;background:#fff;cursor:pointer;font-size:12px">${escapeHtml(t)}</button>`
+  ).join("");
+  opts.querySelectorAll(".tag-opt").forEach(btn => {
+    btn.addEventListener("click", () => {
+      _dgSelectedTag = btn.dataset.tag;
+      opts.querySelectorAll(".tag-opt").forEach(b => {
+        b.style.background = "#fff";
+        b.style.borderColor = "#ddd";
+        b.style.color = "";
+      });
+      btn.style.background = "#fde8e8";
+      btn.style.borderColor = "#e74c3c";
+      btn.style.color = "#c0392b";
+    });
+  });
+  $("dg-tag-custom").value = "";
+  $("deepgreen-reject-modal").style.display = "flex";
+}
+
+$("btn-reject-cancel").addEventListener("click", ()=>{
+  $("reject-modal").style.display = "none";
+});
+
+$("btn-reject-confirm").addEventListener("click", ()=>{
+  const tag = $("reject-tag-custom").value.trim();
+  $("reject-modal").style.display = "none";
+  recordOutcome("disapproved", tag || null);
+});
+
+$("reject-tag-custom").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("btn-reject-confirm").click(); }
+});
+
+$("btn-dg-cancel").addEventListener("click", ()=>{
+  $("deepgreen-reject-modal").style.display = "none";
+});
+
+$("btn-dg-confirm").addEventListener("click", ()=>{
+  const tag = $("dg-tag-custom").value.trim() || _dgSelectedTag || null;
+  $("deepgreen-reject-modal").style.display = "none";
+  recordOutcome("disapproved", tag);
+});
+
+// 深绿弹窗点击背景关闭
+$("deepgreen-reject-modal").addEventListener("click", e => {
+  if (e.target === $("deepgreen-reject-modal"))
+    $("deepgreen-reject-modal").style.display = "none";
+});
+
+// 键盘
+document.addEventListener("keydown", (e)=>{
+  if (isInputFocused) return;
+  if ($("reject-modal").style.display === "flex") return;
+  if ($("deepgreen-reject-modal").style.display === "flex") return;
+  if (e.key === "ArrowLeft"){ e.preventDefault(); prev(); }
+  else if (e.key === "ArrowRight"){ e.preventDefault(); next(); }
+  else if (e.key === "Enter"){ e.preventDefault(); recordOutcome("approved"); }
+  else if (e.key === "Backspace"){ e.preventDefault(); openRejectModal(); }
+  else if (e.key === "d" || e.key === "D"){ e.preventDefault(); deleteCurrent(); }
+});
+
+// ── 人才池 Modal ──────────────────────────────────────
+let _pmEvalId = null;
+
+$("btn-pool").addEventListener("click", async () => {
+  const c = candidates[idx];
+  if (!c) return;
+  _pmEvalId = c.evaluation_id;
+  $("pm-name").textContent = c.name || "未知";
+  let existing = null;
+  try {
+    const r = await fetch(`/api/talent_pool/entry/${c.evaluation_id}`);
+    const d = await r.json();
+    if (d.ok) existing = d.entry;
+  } catch(_) {}
+  $("pm-title").textContent  = existing ? "编辑人才池记录" : "放入人才池";
+  $("pm-date").value         = existing?.recontact_date || "";
+  $("pm-reason").value       = existing?.reason_tag    || "";
+  $("pm-note").value         = existing?.note           || "";
+  $("pool-modal").style.display = "flex";
+});
+
+$("btn-pool-cancel").addEventListener("click", () => {
+  $("pool-modal").style.display = "none";
+  _pmEvalId = null;
+});
+
+$("btn-pool-confirm").addEventListener("click", async () => {
+  const date = $("pm-date").value;
+  if (!date) { alert("请选择再联系日期"); return; }
+  await fetch("/api/talent_pool/add", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      evaluation_id: _pmEvalId,
+      recontact_date: date,
+      reason_tag: $("pm-reason").value,
+      note: $("pm-note").value,
+    })
+  });
+  $("pool-modal").style.display = "none";
+  _pmEvalId = null;
+});
+
+$("pool-modal").addEventListener("click", e => {
+  if (e.target === $("pool-modal")) {
+    $("pool-modal").style.display = "none";
+    _pmEvalId = null;
+  }
+});
+
+// 启动
+loadList();
+loadTransferJobs();
+
+// ── 转移至其他岗位 ──────────────────────────────────────
+async function loadTransferJobs() {
+  try {
+    const r = await fetch('/api/jobs/list');
+    const d = await r.json();
+    const sel = $('transfer-job-select');
+    (d.jobs || [])
+      .filter(j => j.name !== JOB_NAME)
+      .forEach(j => {
+        const opt = document.createElement('option');
+        opt.value = j.name;
+        opt.textContent = j.name;
+        sel.appendChild(opt);
+      });
+  } catch(_) {}
+}
+
+let _transferForce = false;
+
+function openTransferConfirm() {
+  const c = candidates[idx];
+  if (!c) return;
+  const targetJob = $('transfer-job-select').value;
+  const verdict = $('transfer-verdict-select').value;
+  if (!targetJob) { $('transfer-status').textContent = '请先选择目标岗位'; return; }
+  _transferForce = false;
+  $('transfer-conflict-warn').style.display = 'none';
+  $('transfer-modal-msg').textContent =
+    `将「${c.name || '该候选人'}」以【${verdict}】身份转移至「${targetJob}」`;
+  $('btn-transfer-confirm').disabled = false;
+  $('btn-transfer-confirm').textContent = '确认转移';
+  $('transfer-modal').style.display = 'flex';
+}
+
+$('btn-transfer-cancel').addEventListener('click', () => {
+  $('transfer-modal').style.display = 'none';
+});
+
+$('transfer-modal').addEventListener('click', e => {
+  if (e.target === $('transfer-modal')) $('transfer-modal').style.display = 'none';
+});
+
+$('btn-transfer-confirm').addEventListener('click', async () => {
+  const c = candidates[idx];
+  if (!c) return;
+  const targetJob = $('transfer-job-select').value;
+  const verdict = $('transfer-verdict-select').value;
+  const btn = $('btn-transfer-confirm');
+  btn.disabled = true;
+  btn.textContent = '转移中…';
+  try {
+    const r = await fetch('/api/triage/transfer_job', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        evaluation_id: c.evaluation_id,
+        target_job_name: targetJob,
+        verdict: verdict,
+        force: _transferForce,
+      })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      $('transfer-modal').style.display = 'none';
+      if (d.redirect_url) {
+        window.location.href = d.redirect_url;
+      } else {
+        $('transfer-status').textContent = `✓ 已转移至「${targetJob}」`;
+        c.latest_action = 'disapproved';
+        show();
+        setTimeout(next, 120);
+      }
+    } else if (d.conflict) {
+      // 冲突：展示警告，提供强制覆盖选项
+      const actionText = {'approved':'已通过','disapproved':'已不通过','hired':'已录用'}[d.existing_action] || d.existing_action;
+      $('transfer-conflict-warn').textContent =
+        `「${targetJob}」已有该候选人的评估记录（${d.existing_verdict}` +
+        (d.existing_action ? ` / ${actionText}` : '') + `）。点击"强制转移"将覆盖 verdict 并追加通过记录。`;
+      $('transfer-conflict-warn').style.display = 'block';
+      $('btn-transfer-confirm').textContent = '强制转移';
+      $('btn-transfer-confirm').disabled = false;
+      _transferForce = true;
+    } else {
+      alert(d.message || '转移失败');
+      btn.disabled = false;
+      btn.textContent = '确认转移';
+    }
+  } catch(e) {
+    alert('请求失败：' + e);
+    btn.disabled = false;
+    btn.textContent = '确认转移';
+  }
+});
+</script>
+{% endblock %}

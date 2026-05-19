@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block title %}{{ job_name }} · 候选人概览{% endblock %}
+
+{% block content %}
+<div id="eval-banner" style="display:none; background:#2980b9; color:#fff; padding:10px 18px; border-radius:6px; margin-bottom:12px; font-size:14px;"></div>
+
+<div class="cards-header">
+  <h1 class="page-title">{{ job_name }} · 概览</h1>
+  <div class="header-actions">
+    <a class="btn btn-success btn-lg" href="{{ url_for('triage_page', job_name=job_name) }}">⚡ 进入快速处理台</a>
+    <a class="btn btn-primary" href="{{ url_for('scrape_page', job_name=job_name) }}">抓取/评估</a>
+    <a class="btn" href="{{ url_for('prompt_page', job_name=job_name) }}">编辑 Prompt</a>
+    <a class="btn" href="{{ url_for('cleanup_page', job_name=job_name) }}">清理排除</a>
+    <a class="btn" href="{{ url_for('funnel_detail_page', job_name=job_name) }}">岗位分析</a>
+    <a class="btn" href="{{ url_for('api_export_excel', job_name=job_name) }}?scope=passed">📊 导出 Excel</a>
+    <button class="btn btn-warning" id="btn-reevaluate">重新评估全部</button>
+  </div>
+  <div class="filter-row">
+    <a href="?filter=all" class="filter-tab {% if current_filter == 'all' %}active{% endif %}">
+      全部 ({{ counts.total }})
+    </a>
+    <a href="?filter=deepgreen" class="filter-tab tab-deepgreen {% if current_filter == 'deepgreen' %}active{% endif %}">
+      深绿 ({{ counts.deepgreen }})
+    </a>
+    <a href="?filter=lightgreen" class="filter-tab tab-lightgreen {% if current_filter == 'lightgreen' %}active{% endif %}">
+      蓝色 ({{ counts.lightgreen }})
+    </a>
+    <a href="?filter=yellow" class="filter-tab tab-yellow {% if current_filter == 'yellow' %}active{% endif %}">
+      黄色 ({{ counts.yellow }})
+    </a>
+    <a href="?filter=excluded" class="filter-tab tab-grey {% if current_filter == 'excluded' %}active{% endif %}">
+      已排除 ({{ counts.excluded }})
+    </a>
+  </div>
+</div>
+
+<!-- 批次预筛拒绝记录区 -->
+<details id="prefilter-batch-section" style="margin:10px 0 14px;border:1px solid #e0e0e0;border-radius:8px;padding:10px 14px;background:#fafafa">
+  <summary style="cursor:pointer;font-weight:600;font-size:13px;color:#555">
+    🚫 批次预筛拒绝记录（展开可按批次重新评估）
+  </summary>
+  <div id="batch-prefilter-list" style="margin-top:10px;font-size:13px">
+    <span style="color:#bbb">加载中…</span>
+  </div>
+</details>
+
+{% if not candidates %}
+  <div class="empty-state">
+    {% if counts.total == 0 and counts.excluded == 0 %}
+      <p>暂无候选人。请先抓取简历并完成评估。</p>
+      <a class="btn btn-primary" href="{{ url_for('scrape_page', job_name=job_name) }}">前往抓取</a>
+    {% else %}
+      <p>当前筛选下没有候选人。</p>
+      <a class="btn" href="?filter=all">查看全部</a>
+    {% endif %}
+  </div>
+{% endif %}
+
+<div class="card-list">
+{% for c in candidates %}
+  <div class="card card-{{ c.color_class }}" data-eval-id="{{ c.id }}">
+    <div class="card-head">
+      <div class="card-name">
+        <span class="name">{{ c.name }}</span>
+        <span class="meta">{{ c.age or '?' }}岁</span>
+        <span class="meta">{{ c.first_degree or '未明确' }}</span>
+        {% if c.school %}<span class="meta">{{ c.school }}</span>{% endif %}
+        {% if c.major %}<span class="meta">{{ c.major }}</span>{% endif %}
+      </div>
+      {% if show_english %}
+        <div class="english-line">英语：{{ c.english_level or '未提及' }}</div>
+      {% endif %}
+    </div>
+
+    <div class="card-body">
+      {% if c.matches %}
+      <div class="evidence pros">
+        <div class="evidence-title">✅ 符合</div>
+        <ul>
+          {% for m in c.matches %}
+            <li><b>{{ m['条件'] }}</b>{% if m['条件'] and m['证据'] %}：{% endif %}{{ m['证据'] }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% elif c.pros %}
+      <div class="evidence pros">
+        <div class="evidence-title">✅ 符合的点</div>
+        <ul>{% for p in c.pros %}<li>{{ p }}</li>{% endfor %}</ul>
+      </div>
+      {% endif %}
+
+      {% if c.mismatches %}
+      <div class="evidence cons">
+        <div class="evidence-title">❌ 不符合</div>
+        <ul>
+          {% for m in c.mismatches %}
+            <li><b>{{ m['条件'] }}</b>{% if m['条件'] and m['原因'] %}：{% endif %}{{ m['原因'] }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% elif c.cons %}
+      <div class="evidence cons">
+        <div class="evidence-title">❌ 不符合的点</div>
+        <ul>{% for con in c.cons %}<li>{{ con }}</li>{% endfor %}</ul>
+      </div>
+      {% endif %}
+
+      {% if c.verdict_reason %}
+      <div class="verdict-reason-line">{{ c.verdict_reason }}</div>
+      {% endif %}
+    </div>
+
+    <div class="card-actions">
+      <a class="btn btn-link" href="{{ url_for('triage_page', job_name=job_name) }}">在处理台中查看</a>
+      {% if c.latest_action %}<span class="action-status">{{ c.action_label }}</span>{% endif %}
+    </div>
+  </div>
+{% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const jobName = {{ job_name|tojson }};
+
+  document.getElementById("btn-reevaluate").addEventListener("click", async () => {
+    if (!confirm("将清空当前评估记录，重新让 AI 评估所有简历。确定继续？")) return;
+    const resp = await fetch("/api/reevaluate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName})
+    });
+    const data = await resp.json();
+    alert(data.message);
+    if (data.ok) {
+      window.location.href = "/scrape/" + encodeURIComponent(jobName);
+    }
+  });
+
+  // 评估进行中时显示横幅并自动刷新
+  let reloadTimer = null;
+  let wasRunning = false;
+
+  async function pollEvalStatus() {
+    try {
+      const resp = await fetch(`/api/status?job_name=${encodeURIComponent(jobName)}`);
+      const data = await resp.json();
+      const banner = document.getElementById("eval-banner");
+      if (data.running && data.phase === "evaluating") {
+        const pct = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
+        banner.style.display = "block";
+        banner.textContent = `⚙ AI 评估进行中 ${data.current}/${data.total}（${pct}%）— 页面每 6 秒自动刷新`;
+        wasRunning = true;
+        if (!reloadTimer) {
+          reloadTimer = setTimeout(() => { reloadTimer = null; window.location.reload(); }, 6000);
+        }
+      } else {
+        if (wasRunning) {
+          // 刚刚完成，立即刷新一次以显示最终结果
+          window.location.reload();
+        }
+        banner.style.display = "none";
+        if (reloadTimer) { clearTimeout(reloadTimer); reloadTimer = null; }
+      }
+    } catch (e) { /* 网络错误忽略 */ }
+  }
+
+  setInterval(pollEvalStatus, 4000);
+  pollEvalStatus();
+
+  // ── 批次预筛拒绝记录 ──────────────────────────────────────
+  function escapeHtml(s) {
+    if (s == null) return "";
+    return String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
+  }
+
+  async function loadBatchPrefilter() {
+    const section = document.getElementById("prefilter-batch-section");
+    section.addEventListener("toggle", async () => {
+      if (!section.open) return;
+      await renderBatchPrefilter();
+    }, {once: true});
+  }
+
+  async function renderBatchPrefilter() {
+    const listEl = document.getElementById("batch-prefilter-list");
+    try {
+      const r = await fetch(`/api/job/batch_history?job_name=${encodeURIComponent(jobName)}`);
+      const d = await r.json();
+      if (!d.ok || !d.sessions || d.sessions.length === 0) {
+        listEl.innerHTML = '<span style="color:#bbb">暂无批次记录</span>';
+        return;
+      }
+      // 只显示有预筛拒绝的批次
+      const withRejects = d.sessions.filter(s => (s.prefilter_rejected || 0) > 0);
+      if (withRejects.length === 0) {
+        listEl.innerHTML = '<span style="color:#4caf50">✓ 所有批次均无预筛拒绝记录</span>';
+        return;
+      }
+      let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+      html += '<tr style="color:#888;border-bottom:1px solid #eee"><th style="text-align:left;padding:4px 8px">批次时间</th><th style="text-align:center;padding:4px">抓取数</th><th style="text-align:center;padding:4px">预筛排除</th><th style="text-align:center;padding:4px">AI通过</th><th style="padding:4px"></th></tr>';
+      for (const s of withRejects) {
+        const ts = (s.started_at || s.id || "").replace("T", " ").substring(0, 16);
+        const pf = s.prefilter_rejected || 0;
+        const total = s.total_scraped || 0;
+        const passed = s.ai_passed || 0;
+        html += `<tr style="border-bottom:1px solid #f5f5f5">
+          <td style="padding:6px 8px;color:#555">${escapeHtml(ts)}</td>
+          <td style="text-align:center;padding:6px">${total}</td>
+          <td style="text-align:center;padding:6px;color:#c0392b;font-weight:600">${pf}</td>
+          <td style="text-align:center;padding:6px;color:#27ae60">${passed}</td>
+          <td style="padding:6px 4px">
+            <button onclick="reevalBatch(${JSON.stringify(s.id)})"
+              style="font-size:12px;padding:3px 10px;border:1px solid #2980b9;border-radius:4px;background:#eaf4fd;color:#1a5276;cursor:pointer;white-space:nowrap">
+              🔄 重新评估此批次
+            </button>
+          </td>
+        </tr>`;
+      }
+      html += '</table>';
+      html += '<p style="font-size:11px;color:#999;margin:8px 0 0">点「重新评估此批次」将清除该批次的预筛拒绝记录，并重新让 AI 评估这些简历。</p>';
+      listEl.innerHTML = html;
+    } catch(e) {
+      listEl.innerHTML = `<span style="color:#c0392b">✗ 加载失败：${escapeHtml(e.message)}</span>`;
+    }
+  }
+
+  async function reevalBatch(sessionId) {
+    if (!confirm(`确定要重新评估此批次的预筛拒绝简历吗？\n这将清除该批次的预筛记录并重新 AI 评估。`)) return;
+    try {
+      const r = await fetch("/api/job/reeval_prefilter_batch", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({job_name: jobName, session_id: sessionId})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        alert("✓ " + d.message + "\n即将跳转到抓取页面查看进度。");
+        window.location.href = "/scrape/" + encodeURIComponent(jobName);
+      } else {
+        alert("✗ " + d.message);
+      }
+    } catch(e) {
+      alert("✗ 网络错误：" + e.message);
+    }
+  }
+
+  loadBatchPrefilter();
+</script>
+{% endblock %}

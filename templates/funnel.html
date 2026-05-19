@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}招聘漏斗看板{% endblock %}
+
+{% block content %}
+<h1 class="page-title">📈 招聘漏斗健康度看板</h1>
+
+<div class="info-card">
+  <p>每个岗位一行展示关键指标。<b>🟢 正常 / 🟡 关注 / 🔴 警报</b>。
+     最后更新：{{ now }}</p>
+</div>
+
+<table class="job-table funnel-table">
+  <thead>
+    <tr>
+      <th>状态</th>
+      <th>岗位</th>
+      <th>累计评估</th>
+      <th>本周新增</th>
+      <th>预筛通过率</th>
+      <th>深绿率（近2周/累计）</th>
+      <th>本周通过</th>
+      <th>预警</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td class="status-cell">{{ r.status }}</td>
+      <td class="job-name">{{ r.name }}</td>
+      <td>{{ r.total_eval }}</td>
+      <td>{{ r.week_new }}</td>
+      <td>{{ r.prefilter_pass_rate }}%</td>
+      <td>
+        <span title="本周">{{ r.deepgreen_rate_week }}%</span>
+        / <span title="累计">{{ r.deepgreen_rate_total }}%</span>
+      </td>
+      <td>{{ r.approved_count }}</td>
+      <td class="alerts-cell">
+        {% for a in r.alerts %}<div class="alert-line">⚠ {{ a }}</div>{% endfor %}
+        {% if not r.alerts %}<span class="ok-line">正常</span>{% endif %}
+      </td>
+      <td>
+        <a class="btn btn-link" href="{{ url_for('funnel_detail_page', job_name=r.name) }}">详情</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

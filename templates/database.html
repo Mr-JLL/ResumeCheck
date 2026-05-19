@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}数据库查看器{% endblock %}
+
+{% block content %}
+<h1 class="page-title">数据库查看器</h1>
+
+<div class="info-card">
+  <p>所有简历数据都存储在本地 SQLite 数据库（<code>data/resumes.db</code>）。
+     此页面提供四张核心表的浏览与搜索能力。</p>
+</div>
+
+<div class="db-tabs">
+  <a class="filter-tab {% if tab == 'jobs' %}active{% endif %}" href="?tab=jobs">岗位 (jobs)</a>
+  <a class="filter-tab {% if tab == 'candidates' %}active{% endif %}" href="?tab=candidates">候选人 (candidates)</a>
+  <a class="filter-tab {% if tab == 'evaluations' %}active{% endif %}" href="?tab=evaluations">评估 (evaluations)</a>
+  <a class="filter-tab {% if tab == 'outcomes' %}active{% endif %}" href="?tab=outcomes">操作记录 (outcomes)</a>
+</div>
+
+<form method="GET" class="db-search">
+  <input type="hidden" name="tab" value="{{ tab }}">
+  <input type="text" name="q" value="{{ page_data.keyword }}"
+         placeholder="搜索关键字（姓名/岗位/学校等）" class="search-input">
+  <button class="btn btn-primary" type="submit">搜索</button>
+  {% if page_data.keyword %}
+    <a class="btn" href="?tab={{ tab }}">清除</a>
+  {% endif %}
+  <span class="db-meta">共 {{ page_data.total }} 条 · 第 {{ page_data.page }} / {{ page_data.total_pages }} 页</span>
+</form>
+
+{% if page_data.rows %}
+<div class="db-table-wrapper">
+  <table class="result-table">
+    <thead>
+      <tr>
+        {% for h in page_data.headers %}<th>{{ h }}</th>{% endfor %}
+        {% if tab in ['evaluations', 'candidates'] %}<th>操作</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in page_data.rows %}
+      <tr>
+        {% for k, v in row.items() %}
+          <td>{% if v is none %}<em>NULL</em>{% else %}{{ v|string|truncate(150, true, '...') }}{% endif %}</td>
+        {% endfor %}
+        {% if tab == 'evaluations' %}
+          <td><button class="btn btn-link btn-del-row" data-table="evaluation" data-id="{{ row.id }}">删除</button></td>
+        {% elif tab == 'candidates' %}
+          <td><button class="btn btn-link btn-del-row" data-table="candidate" data-id="{{ row.id }}">删除</button></td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if page_data.total_pages > 1 %}
+<div class="pagination">
+  {% if page_data.page > 1 %}
+    <a href="?tab={{ tab }}&page={{ page_data.page-1 }}&q={{ page_data.keyword }}">上一页</a>
+  {% endif %}
+  {% if page_data.page < page_data.total_pages %}
+    <a href="?tab={{ tab }}&page={{ page_data.page+1 }}&q={{ page_data.keyword }}">下一页</a>
+  {% endif %}
+</div>
+{% endif %}
+{% else %}
+<p class="empty-state">无数据</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll(".btn-del-row").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "删除中…";
+      const resp = await fetch("/api/database/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          table: btn.dataset.table,
+          id: parseInt(btn.dataset.id)
+        })
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        btn.closest("tr").remove();
+      } else {
+        btn.disabled = false;
+        btn.textContent = "删除";
+        alert("失败：" + data.message);
+      }
+    });
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}学习报告{% endblock %}
+
+{% block content %}
+<h1 class="page-title">学习报告</h1>
+
+<div class="info-card">
+  <p>基于历史评估结果与 HR 操作记录，分析哪些特征真正预测「最终录用」，
+     帮助优化未来的评判标准。</p>
+</div>
+
+<h2 class="section-title">阶段1：HR 操作分布</h2>
+<div class="learning-summary">
+  {% if outcome_rows %}
+    <table class="job-table">
+      <thead><tr><th>评判颜色</th><th>操作</th><th>数量</th></tr></thead>
+      <tbody>
+        {% for r in outcome_rows %}
+        <tr>
+          <td>{{ r.verdict }}</td>
+          <td>{{ r.action_label }}</td>
+          <td>{{ r.cnt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>暂无 HR 操作记录。请先在快速处理台对候选人做通过/不通过标记。</p>
+  {% endif %}
+</div>
+
+<h2 class="section-title">阶段2：Few-Shot 案例库（通过/录用样本）</h2>
+<div class="learning-summary">
+  {% if hire_summary %}
+    <p>已积累 {{ hire_summary.total_hired }} 个正向样本，分布在 {{ hire_summary.jobs|length }} 个岗位。</p>
+    <ul>
+      {% for j in hire_summary.jobs %}
+      <li>{{ j.name }}：{{ j.count }} 个正向样本{% if j.count >= 3 %}（已激活 Few-Shot）{% else %}（需≥3个激活）{% endif %}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p>暂无通过样本。当 HR 标记候选人为「通过」或「录用」后，该候选人会自动加入下次评判的正例库。</p>
+  {% endif %}
+</div>
+
+<h2 class="section-title">阶段3：特征-结果相关性</h2>
+<div class="learning-summary">
+  {% if correlation %}
+    {{ correlation|safe }}
+  {% else %}
+    <p>样本数不足（需≥200条评估+操作）。当前样本数：{{ total_samples }}</p>
+  {% endif %}
+</div>
+
+<h2 class="section-title">阶段4：淘汰原因模式分析</h2>
+<div class="learning-summary">
+  {% if rejection_tags %}
+    <p>HR 在「不通过」时记录的淘汰原因。同一原因 ≥10 次时，可考虑升级为预筛硬规则。</p>
+    <table class="job-table">
+      <thead><tr><th>淘汰原因</th><th>累计次数</th><th>最近时间</th><th>建议</th></tr></thead>
+      <tbody>
+        {% for t in rejection_tags %}
+        <tr {% if t.suggested %}class="row-suggested"{% endif %}>
+          <td>{{ t.tag_text }}</td>
+          <td>{{ t.count }}</td>
+          <td style="font-size:12px;color:#666;">{{ t.last_at }}</td>
+          <td>
+            {% if t.suggested %}
+              <span class="tag tag-orange">⚠ 高频，建议升级为硬规则</span>
+            {% else %}
+              <span style="color:#999;">观察中</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>暂无淘汰原因记录。HR 在处理台点「不通过」并选择原因后会出现在此。</p>
+  {% endif %}
+</div>
+{% endblock %}
