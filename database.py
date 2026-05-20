@@ -197,6 +197,39 @@ CREATE TABLE IF NOT EXISTS scrape_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_ss_job ON scrape_sessions(job_id);
 CREATE INDEX IF NOT EXISTS idx_ss_started ON scrape_sessions(started_at);
+
+CREATE TABLE IF NOT EXISTS correction_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    eval_id INTEGER NOT NULL,
+    direction TEXT NOT NULL,
+    condition_name TEXT NOT NULL,
+    error_type TEXT,
+    evidence_text TEXT,
+    hr_note TEXT,
+    analyzed INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY(job_id) REFERENCES jobs(id),
+    FOREIGN KEY(eval_id) REFERENCES evaluations(id)
+);
+CREATE INDEX IF NOT EXISTS idx_csig_job ON correction_signals(job_id);
+CREATE INDEX IF NOT EXISTS idx_csig_analyzed ON correction_signals(analyzed);
+CREATE INDEX IF NOT EXISTS idx_csig_cond ON correction_signals(condition_name);
+
+CREATE TABLE IF NOT EXISTS job_criteria_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    condition_name TEXT NOT NULL,
+    note_text TEXT NOT NULL,
+    is_hard INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    source_signal_count INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    confirmed_at TEXT,
+    FOREIGN KEY(job_id) REFERENCES jobs(id)
+);
+CREATE INDEX IF NOT EXISTS idx_jcn_job ON job_criteria_notes(job_id);
+CREATE INDEX IF NOT EXISTS idx_jcn_status ON job_criteria_notes(status);
 """
 
 # 列迁移后才能创建的索引
@@ -1729,6 +1762,255 @@ def get_batch_stats(job_name, session_id):
         "hr_disapproved": disapproved,
         "hr_pending": (total - excl) - approved - disapproved,
     }
+
+
+# =============================================================================
+# Correction signals & criteria notes
+# =============================================================================
+
+def record_correction_signal(job_id, eval_id, direction, condition_name,
+                              error_type, evidence_text, hr_note):
+    """记录一条纠错信号。direction: 'too_loose'|'too_strict'"""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO correction_signals
+              (job_id, eval_id, direction, condition_name, error_type,
+               evidence_text, hr_note, analyzed)
+            VALUES (?,?,?,?,?,?,?,0)
+        """, (job_id, eval_id, direction, condition_name, error_type,
+              evidence_text, hr_note))
+
+
+def get_unanalyzed_correction_signals(job_id, limit=50):
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT * FROM correction_signals
+            WHERE job_id=? AND analyzed=0
+            ORDER BY created_at
+            LIMIT ?
+        """, (job_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_correction_signals_analyzed(signal_ids):
+    if not signal_ids:
+        return
+    placeholders = ",".join("?" * len(signal_ids))
+    with get_conn() as conn:
+        conn.execute(
+            f"UPDATE correction_signals SET analyzed=1 WHERE id IN ({placeholders})",
+            signal_ids
+        )
+
+
+def get_condition_correction_counts(job_id):
+    """返回各条件的纠错次数，used to decide when to generate a note."""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT condition_name, direction, COUNT(*) AS cnt
+            FROM correction_signals
+            WHERE job_id=? AND analyzed=0
+            GROUP BY condition_name, direction
+            HAVING cnt >= 3
+        """, (job_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_correction_signals_for_condition(job_id, condition_name, direction, limit=10):
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT * FROM correction_signals
+            WHERE job_id=? AND condition_name=? AND direction=?
+            ORDER BY created_at DESC LIMIT ?
+        """, (job_id, condition_name, direction, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_criteria_note(job_id, condition_name, note_text, is_hard,
+                         source_signal_count):
+    """插入或更新为 pending 状态的草稿细则（已 confirmed 的不覆盖）。"""
+    with get_conn() as conn:
+        existing = conn.execute("""
+            SELECT id, status FROM job_criteria_notes
+            WHERE job_id=? AND condition_name=?
+            ORDER BY created_at DESC LIMIT 1
+        """, (job_id, condition_name)).fetchone()
+        if existing and existing["status"] == "confirmed":
+            return existing["id"]
+        if existing and existing["status"] == "pending":
+            conn.execute("""
+                UPDATE job_criteria_notes
+                SET note_text=?, is_hard=?, source_signal_count=?
+                WHERE id=?
+            """, (note_text, int(is_hard), source_signal_count, existing["id"]))
+            return existing["id"]
+        conn.execute("""
+            INSERT INTO job_criteria_notes
+              (job_id, condition_name, note_text, is_hard, status, source_signal_count)
+            VALUES (?,?,?,?,?,?)
+        """, (job_id, condition_name, note_text, int(is_hard),
+              "pending", source_signal_count))
+
+
+def list_criteria_notes(job_id, status=None):
+    with get_conn() as conn:
+        if status:
+            rows = conn.execute("""
+                SELECT * FROM job_criteria_notes
+                WHERE job_id=? AND status=?
+                ORDER BY created_at DESC
+            """, (job_id, status)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT * FROM job_criteria_notes
+                WHERE job_id=?
+                ORDER BY status DESC, created_at DESC
+            """, (job_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_confirmed_criteria_notes(job_id):
+    return list_criteria_notes(job_id, status="confirmed")
+
+
+def confirm_criteria_note(note_id, note_text, is_hard):
+    """HR确认一条细则，可同时修改文字和硬软性。"""
+    with get_conn() as conn:
+        conn.execute("""
+            UPDATE job_criteria_notes
+            SET status='confirmed', note_text=?, is_hard=?,
+                confirmed_at=datetime('now')
+            WHERE id=?
+        """, (note_text, int(is_hard), note_id))
+
+
+def dismiss_criteria_note(note_id):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE job_criteria_notes SET status='dismissed' WHERE id=?",
+            (note_id,)
+        )
+
+
+def get_criteria_override_stats(job_id):
+    """统计深绿被否率和黄色被通过率（全时段，用于 criteria.html 快速概览）。"""
+    with get_conn() as conn:
+        dg = conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN o.action IN ('disapproved','rejected') THEN 1 ELSE 0 END) AS rejected
+            FROM evaluations e
+            JOIN outcomes o ON o.evaluation_id = e.id
+            WHERE e.job_id=? AND e.verdict='深绿'
+        """, (job_id,)).fetchone()
+        yw = conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN o.action IN ('approved','hired') THEN 1 ELSE 0 END) AS approved
+            FROM evaluations e
+            JOIN outcomes o ON o.evaluation_id = e.id
+            WHERE e.job_id=? AND e.verdict='黄色'
+        """, (job_id,)).fetchone()
+    dg_total = dg["total"] or 0
+    yw_total = yw["total"] or 0
+    return {
+        "dg_total": dg_total,
+        "dg_reject_rate": round(dg["rejected"] / dg_total * 100, 1) if dg_total else 0,
+        "yw_total": yw_total,
+        "yw_approve_rate": round(yw["approved"] / yw_total * 100, 1) if yw_total else 0,
+    }
+
+
+def get_criteria_effect_stats(job_id):
+    """
+    模块5 效果追踪：以第一条细则被确认的时间为分界点，
+    对比细则加入前后的深绿被否率和黄色被通过率。
+    返回 {split_date, before: {...}, after: {...} | None}
+    """
+    with get_conn() as conn:
+        split_row = conn.execute("""
+            SELECT MIN(confirmed_at) AS first_confirmed
+            FROM job_criteria_notes
+            WHERE job_id=? AND status='confirmed' AND confirmed_at IS NOT NULL
+        """, (job_id,)).fetchone()
+        split_date = split_row["first_confirmed"] if split_row else None
+
+        def _rates(extra_sql, extra_params):
+            dg = conn.execute(f"""
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN o.action IN ('disapproved','rejected') THEN 1 ELSE 0 END) AS rejected
+                FROM evaluations e
+                JOIN outcomes o ON o.evaluation_id = e.id
+                WHERE e.job_id=? AND e.verdict='深绿' {extra_sql}
+            """, [job_id] + extra_params).fetchone()
+            yw = conn.execute(f"""
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN o.action IN ('approved','hired') THEN 1 ELSE 0 END) AS approved
+                FROM evaluations e
+                JOIN outcomes o ON o.evaluation_id = e.id
+                WHERE e.job_id=? AND e.verdict='黄色' {extra_sql}
+            """, [job_id] + extra_params).fetchone()
+            dg_t = dg["total"] or 0
+            yw_t = yw["total"] or 0
+            return {
+                "dg_total": dg_t,
+                "dg_reject_rate": round(dg["rejected"] / dg_t * 100, 1) if dg_t else None,
+                "yw_total": yw_t,
+                "yw_approve_rate": round(yw["approved"] / yw_t * 100, 1) if yw_t else None,
+            }
+
+        if split_date:
+            before = _rates("AND o.action_at < ?", [split_date])
+            after  = _rates("AND o.action_at >= ?", [split_date])
+        else:
+            before = _rates("", [])
+            after  = None
+
+    return {"split_date": split_date, "before": before, "after": after}
+
+
+def get_all_condition_signal_counts(job_id):
+    """
+    模块2 错误模式库：返回该岗位所有纠错条件的累计信号数，
+    含已分析和未分析（供 UI 展示积累进度，不受 analyzed 标志影响）。
+    """
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT condition_name, direction,
+                   COUNT(*) AS total_count,
+                   SUM(CASE WHEN analyzed=0 THEN 1 ELSE 0 END) AS pending_count,
+                   MAX(created_at) AS latest_at
+            FROM correction_signals
+            WHERE job_id=?
+            GROUP BY condition_name, direction
+            ORDER BY total_count DESC
+        """, (job_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_stale_criteria_notes(job_id, days=30):
+    """
+    模块6 定期细则整理：返回已确认但超过 days 天未复查的细则。
+    默认 30 天（每月整理周期）。
+    """
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT *,
+                   CAST(julianday('now') - julianday(confirmed_at) AS INTEGER) AS days_since_review
+            FROM job_criteria_notes
+            WHERE job_id=? AND status='confirmed'
+              AND confirmed_at IS NOT NULL
+              AND julianday('now') - julianday(confirmed_at) > ?
+            ORDER BY confirmed_at ASC
+        """, (job_id, days)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def refresh_criteria_note_reviewed(note_id):
+    """模块6：HR 复查后刷新细则的 confirmed_at，重置 30 天计时。"""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE job_criteria_notes SET confirmed_at=datetime('now') WHERE id=?",
+            (note_id,)
+        )
 
 
 if __name__ == "__main__":

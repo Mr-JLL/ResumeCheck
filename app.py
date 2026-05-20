@@ -886,52 +886,118 @@ def audit_page(job_name):
     return render_template("audit.html", **data)
 
 
-@app.route("/preferences")
-def preferences_page():
-    """偏好学习收件箱"""
-    jobs = database.list_jobs()
-    job_name = request.args.get("job")
-    job_id = None
-    if job_name:
-        j = database.get_job(job_name)
-        if j:
-            job_id = j["id"]
-
-    pending_rules = database.list_preference_rules(job_id=job_id, status="pending")
-    recent_signals = database.list_preference_signals_recent(job_id=job_id, limit=20)
-    total_signals = database.count_preference_signals_total(job_id=job_id)
-    confirmed_rules = database.list_preference_rules(job_id=job_id, status="confirmed")
-
-    return render_template(
-        "preferences.html",
-        jobs=jobs,
-        selected_job=job_name or "",
-        pending_rules=pending_rules,
-        confirmed_rules=confirmed_rules,
-        recent_signals=recent_signals,
-        total_signals=total_signals,
-    )
+@app.route("/criteria/<path:job_name>")
+def criteria_page(job_name):
+    """评估细则管理页面"""
+    data = learning.get_criteria_page_data(job_name)
+    if not data:
+        return f"岗位「{job_name}」不存在", 404
+    return render_template("criteria.html", **data)
 
 
-@app.route("/api/preference/pending_count")
-def api_preference_pending_count():
-    count = len(database.list_preference_rules(status="pending"))
-    return jsonify(ok=True, count=count)
+@app.route("/api/correction/submit", methods=["POST"])
+def api_correction_submit():
+    """
+    提交单条纠错信号。
+    Body: {evaluation_id, direction, condition_name, error_type, evidence_text, hr_note}
+    direction: 'too_loose' | 'too_strict'
+    error_type: 'evidence_insufficient' | 'criterion_misunderstood' | 'criterion_not_important'
+    """
+    data = request.get_json() or {}
+    eval_id = data.get("evaluation_id")
+    direction = data.get("direction", "")
+    condition_name = (data.get("condition_name") or "").strip()
+    error_type = data.get("error_type", "")
+    evidence_text = (data.get("evidence_text") or "").strip()[:200]
+    hr_note = (data.get("hr_note") or "").strip()[:50]
 
+    if not eval_id or direction not in ("too_loose", "too_strict") or not condition_name:
+        return jsonify(ok=False, message="缺少必要参数"), 400
 
-@app.route("/api/preference/confirm/<int:rule_id>", methods=["POST"])
-def api_preference_confirm(rule_id):
     try:
-        database.update_preference_rule_status(rule_id, "confirmed")
+        with database.get_conn() as conn:
+            row = conn.execute(
+                "SELECT job_id FROM evaluations WHERE id=?", (int(eval_id),)
+            ).fetchone()
+        if not row:
+            return jsonify(ok=False, message="评估记录不存在"), 404
+
+        job_id = row["job_id"]
+        database.record_correction_signal(
+            job_id=job_id,
+            eval_id=int(eval_id),
+            direction=direction,
+            condition_name=condition_name,
+            error_type=error_type or None,
+            evidence_text=evidence_text or None,
+            hr_note=hr_note or None,
+        )
+
+        # 每积累 3 次未分析信号时，后台触发细则草稿生成
+        counts = database.get_condition_correction_counts(job_id)
+        if counts:
+            job_row = database.get_job_by_id(job_id)
+            job_name_bg = job_row["name"] if job_row else ""
+
+            def _run_analysis(jid, jname):
+                try:
+                    client = llm_utils.initialize_client()
+                    if client:
+                        learning.analyze_correction_signals(jid, jname, client)
+                except Exception as ex:
+                    logger.warning(f"细则分析后台失败: {ex}")
+
+            threading.Thread(
+                target=_run_analysis,
+                args=(job_id, job_name_bg),
+                daemon=True,
+                name="correction-analysis",
+            ).start()
+
         return jsonify(ok=True)
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 500
 
 
-@app.route("/api/preference/dismiss/<int:rule_id>", methods=["POST"])
-def api_preference_dismiss(rule_id):
+@app.route("/api/criteria/list/<path:job_name>")
+def api_criteria_list(job_name):
+    """返回岗位评估细则列表（含 pending/confirmed/dismissed 分组）"""
+    data = learning.get_criteria_page_data(job_name)
+    if not data:
+        return jsonify(ok=False, message="岗位不存在"), 404
+    return jsonify(ok=True, **data)
+
+
+@app.route("/api/criteria/confirm/<int:note_id>", methods=["POST"])
+def api_criteria_confirm(note_id):
+    """HR 确认一条细则草稿（可同时编辑文本和硬性标记）"""
+    data = request.get_json() or {}
+    note_text = (data.get("note_text") or "").strip()
+    is_hard = int(bool(data.get("is_hard", False)))
+    if not note_text:
+        return jsonify(ok=False, message="细则内容不能为空"), 400
     try:
-        database.update_preference_rule_status(rule_id, "dismissed")
+        database.confirm_criteria_note(note_id, note_text, is_hard)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(ok=False, message=str(e)), 500
+
+
+@app.route("/api/criteria/dismiss/<int:note_id>", methods=["POST"])
+def api_criteria_dismiss(note_id):
+    """HR 驳回一条细则草稿"""
+    try:
+        database.dismiss_criteria_note(note_id)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(ok=False, message=str(e)), 500
+
+
+@app.route("/api/criteria/refresh/<int:note_id>", methods=["POST"])
+def api_criteria_refresh(note_id):
+    """HR 复查后重置细则的 30 天计时"""
+    try:
+        database.refresh_criteria_note_reviewed(note_id)
         return jsonify(ok=True)
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 500
@@ -939,7 +1005,7 @@ def api_preference_dismiss(rule_id):
 
 @app.route("/api/audit/refresh/<path:job_name>", methods=["POST"])
 def api_audit_refresh(job_name):
-    """手动触发偏好分析（收件箱用）"""
+    """手动触发纠错信号分析，生成评估细则草稿"""
     job = database.get_job(job_name)
     if not job:
         return jsonify(ok=False, message="岗位不存在"), 404
@@ -947,7 +1013,7 @@ def api_audit_refresh(job_name):
     if not client:
         return jsonify(ok=False, message="LLM 不可用"), 500
     try:
-        learning.analyze_preference_signals(job["id"], job_name, client)
+        learning.analyze_correction_signals(job["id"], job_name, client)
         return jsonify(ok=True)
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 500
@@ -978,71 +1044,8 @@ def api_outcome():
                 (int(eval_id),)).fetchone()
         if eval_row:
             job_id = eval_row["job_id"]
-            ai_verdict = eval_row["verdict"]
             if rejection_tag and action in ("disapproved", "rejected"):
                 database.add_rejection_tag(int(eval_id), job_id, rejection_tag)
-
-            # 偏好信号采集：检测 override 事件
-            signal_type = None
-            if action in ("approved", "hired") and ai_verdict in ("黄色", "排除"):
-                signal_type = "override_approve"
-            elif action in ("disapproved", "rejected") and ai_verdict == "深绿":
-                signal_type = "override_reject"
-            elif action in ("approved", "hired") and dwell_seconds and dwell_seconds < 8:
-                signal_type = "fast_approve"
-            elif action in ("disapproved", "rejected") and dwell_seconds and dwell_seconds > 45:
-                signal_type = "slow_reject"
-
-            if signal_type:
-                try:
-                    with database.get_conn() as _conn:
-                        _cid_row = _conn.execute(
-                            "SELECT candidate_id FROM evaluations WHERE id=?",
-                            (int(eval_id),)).fetchone()
-                    cand_row = database.get_candidate_by_id(_cid_row["candidate_id"]) if _cid_row else None
-                    snapshot = None
-                    if cand_row and cand_row.get("structured_json"):
-                        try:
-                            sj = json.loads(cand_row["structured_json"])
-                            wh = sj.get("work_history") or []
-                            months_list = [
-                                w["months"] for w in wh
-                                if isinstance(w, dict) and isinstance(w.get("months"), int)
-                            ]
-                            snapshot = {
-                                "first_degree": cand_row.get("first_degree"),
-                                "total_years": cand_row.get("total_years"),
-                                "industry_tags": sj.get("industry_tags") or [],
-                                "avg_tenure_months": round(
-                                    sum(months_list) / len(months_list)
-                                ) if months_list else None,
-                            }
-                        except Exception:
-                            pass
-                    database.record_preference_signal(
-                        int(eval_id), job_id, signal_type, ai_verdict, action,
-                        dwell_seconds, rejection_tag, snapshot
-                    )
-                    # 每 20 次 HR 决策后，若有未分析信号，后台触发分析
-                    total_oc = database.count_outcomes_for_job(job_id)
-                    if total_oc > 0 and total_oc % 20 == 0 and database.count_unanalyzed_signals(job_id) > 0:
-                        job_row = database.get_job_by_id(job_id)
-                        job_name_for_pref = job_row["name"] if job_row else ""
-                        def _run_pref_analysis(jid, jname):
-                            try:
-                                client = llm_utils.initialize_client()
-                                if client:
-                                    learning.analyze_preference_signals(jid, jname, client)
-                            except Exception as ex:
-                                logger.warning(f"偏好分析后台失败: {ex}")
-                        threading.Thread(
-                            target=_run_pref_analysis,
-                            args=(job_id, job_name_for_pref),
-                            daemon=True,
-                            name="pref-analysis",
-                        ).start()
-                except Exception as pref_err:
-                    logger.debug(f"偏好信号记录失败（不影响主流程）: {pref_err}")
 
         learning.invalidate_cache()
         return jsonify(ok=True)
@@ -1288,21 +1291,21 @@ def api_triage_list():
             ],
         })
 
-    # 注入已确认偏好规则
+    # 注入已确认评估细则
     job_id = job["id"] if job else None
-    confirmed_prefs = database.list_preference_rules(job_id=job_id, status="confirmed")
-    pref_list = [
+    confirmed_notes = database.get_confirmed_criteria_notes(job_id) if job_id else []
+    criteria_notes = [
         {
-            "rule_text": r["rule_text"],
-            "confidence": r["confidence"],
-            "evidence_count": r["evidence_count"],
+            "condition_name": n["condition_name"],
+            "note_text": n["note_text"],
+            "is_hard": bool(n["is_hard"]),
         }
-        for r in confirmed_prefs[:8]
+        for n in confirmed_notes
     ]
 
     return jsonify(ok=True, candidates=out, count=len(out),
                    few_shot_cases=few_shot_cases,
-                   confirmed_preferences=pref_list)
+                   criteria_notes=criteria_notes)
 
 
 @app.route("/api/triage/cross_jobs/<resume_id>", methods=["GET"])
@@ -1397,6 +1400,18 @@ def api_triage_transfer_job():
     )
 
 
+_RESUME_TRIAGE_STYLE = """<style id="_hy_triage_clean">
+noscript { display: none !important; }
+.navBar_wrap { display: none !important; }
+.left_item_status_card { display: none !important; }
+.resume_detail_right { display: none !important; }
+.resume_detail_left { width: 100% !important; flex: 1 1 auto !important; max-width: 100% !important; }
+.talent_resume_detail_wrap, .eh_body_min_width_resume { min-width: 0 !important; }
+.ehire_gaea_html .eh_login, .ehire_gaea_html header main, .ehire_gaea_html .content { min-width: 0 !important; }
+html, body { min-width: 0 !important; overflow-x: hidden !important; padding-top: 0 !important; }
+</style>"""
+
+
 @app.route("/api/resume_html/<resume_id>", methods=["GET"])
 def api_resume_html(resume_id):
     """返回完整简历的 HTML 文本（用于处理台右栏内嵌渲染）"""
@@ -1410,7 +1425,7 @@ def api_resume_html(resume_id):
     html = pipeline.read_html_any(actual)
     if not html:
         return Response("读取失败", status=500)
-    return Response(html, mimetype="text/html; charset=utf-8")
+    return Response(html + _RESUME_TRIAGE_STYLE, mimetype="text/html; charset=utf-8")
 
 
 # =============================================================================
@@ -1960,6 +1975,8 @@ def api_data_clear_all():
             conn.execute("DELETE FROM talent_pool")
             conn.execute("DELETE FROM preference_signals")
             conn.execute("DELETE FROM preference_rules")
+            conn.execute("DELETE FROM correction_signals")
+            conn.execute("DELETE FROM job_criteria_notes")
             conn.execute("DELETE FROM outcomes")
             conn.execute("DELETE FROM rejection_tags")
             conn.execute("DELETE FROM prefilter_rejects")

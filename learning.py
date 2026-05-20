@@ -1269,7 +1269,138 @@ def get_audit_page_data(job_name):
 
 
 # =============================================================================
-# 偏好学习：信号分析（后台 LLM 调用）
+# 纠错信号分析：生成评估细则草稿
+# =============================================================================
+
+def analyze_correction_signals(job_id, job_name, client):
+    """
+    读取未分析的纠错信号，当同一条件积累 ≥3 次同方向纠错时，
+    让 LLM 生成评估细则草稿，写入 job_criteria_notes（status=pending）。
+    最后将所有涉及信号标记为已分析。
+    """
+    # 获取有足够信号的条件
+    condition_counts = database.get_condition_correction_counts(job_id)
+    if not condition_counts:
+        return
+
+    signal_ids_to_mark = []
+
+    for row in condition_counts:
+        cond_name = row["condition_name"]
+        direction = row["direction"]
+        count = row["cnt"]
+
+        # 获取该条件的信号样本
+        signals = database.get_correction_signals_for_condition(
+            job_id, cond_name, direction, limit=10
+        )
+        if not signals:
+            continue
+
+        signal_ids_to_mark.extend(s["id"] for s in signals)
+
+        # 构建 LLM 输入
+        direction_label = "过于宽松（AI 通过但 HR 拒绝）" if direction == "too_loose" else "过于严格（AI 拒绝但 HR 通过）"
+        examples = []
+        for s in signals:
+            parts = []
+            if s.get("error_type"):
+                type_map = {
+                    "evidence_insufficient": "证据不足",
+                    "criterion_misunderstood": "条件理解有误",
+                    "criterion_not_important": "条件实际不重要",
+                }
+                parts.append(f"错误类型：{type_map.get(s['error_type'], s['error_type'])}")
+            if s.get("evidence_text"):
+                parts.append(f"AI 所用证据：{s['evidence_text'][:80]}")
+            if s.get("hr_note"):
+                parts.append(f"HR 备注：{s['hr_note'][:50]}")
+            if parts:
+                examples.append("- " + "；".join(parts))
+
+        prompt = f"""你是一位招聘标准制定专家。以下是 HR 对 AI 在评估「{job_name}」岗位时，
+针对条件「{cond_name}」的 {count} 次纠错记录，方向均为：{direction_label}。
+
+纠错详情：
+{chr(10).join(examples) or '（无详情）'}
+
+请根据这些纠错，写一段简短的「评估细则」（50字以内），告诉 AI 未来应该如何评估这个条件，
+包括：需要什么具体证据、什么程度算满足、什么不算。
+
+同时判断这个条件是否应该设为硬性（候选人不满足即直接排除）。
+
+输出 JSON：
+{{"note_text": "细则内容（≤50字）", "is_hard": 0}}"""
+
+        try:
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": "你是招聘评估标准制定专家，善于将模糊经验转化为可执行的判断细则。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                timeout=60.0,
+            )
+            raw = response.choices[0].message.content
+            parsed = json.loads(raw)
+            note_text = (parsed.get("note_text") or "").strip()
+            is_hard = int(bool(parsed.get("is_hard", 0)))
+
+            if note_text and len(note_text) >= 5:
+                database.upsert_criteria_note(
+                    job_id=job_id,
+                    condition_name=cond_name,
+                    note_text=note_text,
+                    is_hard=is_hard,
+                    source_signal_count=count,
+                )
+                logger.info(f"生成评估细则草稿：{cond_name} ({direction}), is_hard={is_hard}")
+        except Exception as e:
+            logger.warning(f"细则生成 LLM 调用失败 [{cond_name}]: {e}")
+
+    if signal_ids_to_mark:
+        # 只标记已处理（≥3次）的信号；不足3次的留待继续累积
+        database.mark_correction_signals_analyzed(signal_ids_to_mark)
+
+
+def get_criteria_page_data(job_name):
+    """
+    供 /criteria/<job_name> 路由调用。
+    返回该岗位的评估细则列表（按 status 分组）及校准统计。
+    """
+    job = database.get_job(job_name)
+    if not job:
+        return None
+    job_id = job["id"]
+
+    pending_notes = database.list_criteria_notes(job_id, status="pending")
+    confirmed_notes = database.list_criteria_notes(job_id, status="confirmed")
+    dismissed_notes = database.list_criteria_notes(job_id, status="dismissed")
+
+    stats = database.get_criteria_override_stats(job_id)
+    signal_counts = database.get_all_condition_signal_counts(job_id)
+    stale_notes = database.get_stale_criteria_notes(job_id, days=30)
+    effect_stats = database.get_criteria_effect_stats(job_id)
+
+    return {
+        "job_name": job_name,
+        "pending": pending_notes,
+        "confirmed": confirmed_notes,
+        "dismissed": dismissed_notes,
+        "dg_total": stats.get("dg_total", 0),
+        "dg_reject_rate": stats.get("dg_reject_rate", 0.0),
+        "yw_total": stats.get("yw_total", 0),
+        "yw_approve_rate": stats.get("yw_approve_rate", 0.0),
+        "signal_counts": signal_counts,
+        "stale_notes": stale_notes,
+        "effect_stats": effect_stats,
+    }
+
+
+# =============================================================================
+# 偏好学习：信号分析（已废弃，由 analyze_correction_signals 取代）
 # =============================================================================
 
 def analyze_preference_signals(job_id, job_name, client):

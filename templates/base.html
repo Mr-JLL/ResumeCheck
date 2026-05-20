@@ -14,7 +14,6 @@
       <a href="{{ url_for('search_page') }}">🔍 搜索</a>
       <a href="{{ url_for('talent_pool_page') }}" id="nav-pool">⏰ 人才池</a>
       <a href="{{ url_for('funnel_page') }}">漏斗看板</a>
-      <a href="{{ url_for('preferences_page') }}" id="nav-pref">🧠 偏好</a>
       <a href="{{ url_for('new_job_page') }}">新增岗位</a>
       <a href="{{ url_for('database_page') }}">数据库</a>
       <a href="{{ url_for('learning_page') }}">学习报告</a>
@@ -42,23 +41,6 @@
           b.textContent = d.count;
           b.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;'
             + 'min-width:17px;height:17px;border-radius:9px;background:#e74c3c;'
-            + 'color:#fff;font-size:10px;font-weight:800;margin-left:4px;padding:0 4px;vertical-align:middle';
-          a.appendChild(b);
-        }
-      }
-    } catch(_) {}
-  })();
-  (async () => {
-    try {
-      const r = await fetch('/api/preference/pending_count');
-      const d = await r.json();
-      if (d.ok && d.count > 0) {
-        const a = document.getElementById('nav-pref');
-        if (a) {
-          const b = document.createElement('span');
-          b.textContent = d.count;
-          b.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;'
-            + 'min-width:17px;height:17px;border-radius:9px;background:#8e44ad;'
             + 'color:#fff;font-size:10px;font-weight:800;margin-left:4px;padding:0 4px;vertical-align:middle';
           a.appendChild(b);
         }

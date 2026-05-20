@@ -17,6 +17,8 @@
       <a href="{{ url_for('funnel_detail_page', job_name=job_name) }}">岗位分析</a>
       <span class="dot">·</span>
       <a href="{{ url_for('audit_page', job_name=job_name) }}" style="color:#8e44ad">🩺 诊断</a>
+      <span class="dot">·</span>
+      <a href="{{ url_for('criteria_page', job_name=job_name) }}" style="color:#e67e22">📋 评估细则</a>
     </div>
   </div>
 
@@ -65,7 +67,6 @@
 
       <div id="cand-cross-jobs" class="cross-jobs"></div>
       <div id="cand-duplicate" class="dup-flag" style="display:none;"></div>
-      <div id="cand-watermark" class="wm-flag" style="display:none;">⚠ 描述笼统：本简历缺少量化数据</div>
 
       <!-- 快速导览卡 -->
       <div id="quick-card" style="background:#f8f9fa;border-radius:8px;padding:12px 14px;margin:10px 0;font-size:13px;border-left:3px solid #ccc">
@@ -139,11 +140,11 @@
             <div style="font-weight:600;color:#27ae60;margin-bottom:6px;">🏆 历史录用参考案例</div>
             <ul id="few-shot-list" style="margin:0;padding:0 0 0 14px;color:#555;line-height:1.8;"></ul>
           </div>
-          <div id="pref-section" style="display:none;">
-            <div style="font-weight:600;color:#8e44ad;margin-bottom:6px;">🎯 已确认的筛选偏好</div>
-            <ul id="pref-list" style="margin:0;padding:0 0 0 14px;color:#555;line-height:1.8;"></ul>
+          <div id="criteria-section" style="display:none;">
+            <div style="font-weight:600;color:#8e44ad;margin-bottom:6px;">📋 该岗位已确认评估细则</div>
+            <ul id="criteria-list" style="margin:0;padding:0 0 0 14px;color:#555;line-height:1.8;"></ul>
           </div>
-          <div id="ai-ref-empty" style="color:#aaa;font-size:11px;">暂无录用案例或已确认偏好，AI 将仅依据岗位规则判断。</div>
+          <div id="ai-ref-empty" style="color:#aaa;font-size:11px;">暂无录用案例或已确认细则，AI 将仅依据岗位规则判断。</div>
         </div>
       </details>
     </div>
@@ -176,23 +177,44 @@
       </div>
     </div>
 
-    <!-- 深绿候选人不通过时的专属轻量弹窗（用于偏好信号采集） -->
-    <div id="deepgreen-reject-modal" class="modal-mask" style="display:none;">
-      <div class="modal-box" style="width:340px;max-width:95vw">
-        <div class="modal-title" style="color:#e74c3c">
-          ⚠ 驳回 AI 强烈推荐的候选人
+    <!-- 纠错弹窗：深绿/蓝色被拒 或 黄色被通过时触发 -->
+    <div id="correction-modal" class="modal-mask" style="display:none;">
+      <div class="modal-box" style="width:400px;max-width:95vw">
+        <div class="modal-title" id="cm-title">🔍 AI 评估纠错</div>
+        <p style="font-size:12px;color:#888;margin:0 0 10px" id="cm-desc"></p>
+
+        <div style="font-size:12px;color:#555;margin-bottom:6px;font-weight:600">
+          选择 AI 判断有误的条件（可多选，可跳过）
         </div>
-        <p style="font-size:12px;color:#888;margin:0 0 12px">
-          AI 将本候选人评为「深绿」，你仍选择不通过。<br>
-          请快速标记原因，帮助 AI 学习你的真实偏好：
-        </p>
-        <div id="dg-tag-options" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px"></div>
-        <input type="text" id="dg-tag-custom" placeholder="其他原因（可选填写）"
-               style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:6px;
-                      font-size:13px;box-sizing:border-box;margin-bottom:12px">
+        <div id="cm-conditions"
+             style="margin-bottom:10px;max-height:180px;overflow-y:auto;
+                    border:1px solid #eee;border-radius:6px;padding:8px 10px;background:#fafafa">
+        </div>
+
+        <div id="cm-error-type-row" style="display:none;margin-bottom:10px">
+          <label style="font-size:12px;color:#555;display:block;margin-bottom:4px">错误类型</label>
+          <select id="cm-error-type"
+                  style="width:100%;padding:6px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px">
+            <option value="evidence_insufficient">证据不足（AI 原文引用不够充分）</option>
+            <option value="criterion_misunderstood">条件理解有误（方向判断错了）</option>
+            <option value="criterion_not_important">条件实际不重要（可降低权重）</option>
+          </select>
+        </div>
+
+        <div style="margin-bottom:14px">
+          <label style="font-size:12px;color:#555;display:block;margin-bottom:4px">
+            补充说明（可选，≤50字，同样用于 AI 学习）
+          </label>
+          <input type="text" id="cm-hr-note" maxlength="50"
+                 placeholder="例：5年以上同行业经验才算满足"
+                 style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:5px;
+                        font-size:12px;box-sizing:border-box">
+        </div>
+
         <div class="modal-actions">
-          <button class="btn" id="btn-dg-cancel">取消</button>
-          <button class="btn btn-fail" id="btn-dg-confirm">确认不通过</button>
+          <button class="btn" id="btn-cm-skip">跳过标注，直接确认</button>
+          <button class="btn" id="btn-cm-confirm"
+                  style="background:#2980b9;color:#fff;border-color:#2980b9;font-weight:700">确认并提交</button>
         </div>
       </div>
     </div>
@@ -243,7 +265,7 @@ let idx = 0;
 let isInputFocused = false;
 let _showTime = null;
 let _fewShotCases = [];
-let _confirmedPrefs = [];
+let _criteriaDetails = [];
 
 function $(id){ return document.getElementById(id); }
 
@@ -270,15 +292,15 @@ $("btn-apply-weights").addEventListener("click", ()=>{
 function renderAiRefPanel(){
   const fsSection = $("few-shot-section");
   const fsList = $("few-shot-list");
-  const prefSection = $("pref-section");
-  const prefList = $("pref-list");
+  const criteriaSection = $("criteria-section");
+  const criteriaListEl = $("criteria-list");
   const emptyMsg = $("ai-ref-empty");
   const badge = $("ai-ref-badge");
 
-  const totalCount = _fewShotCases.length + _confirmedPrefs.length;
+  const totalCount = _fewShotCases.length + _criteriaDetails.length;
   if (totalCount === 0){
     fsSection.style.display = "none";
-    prefSection.style.display = "none";
+    criteriaSection.style.display = "none";
     emptyMsg.style.display = "block";
     badge.style.display = "none";
     return;
@@ -298,14 +320,14 @@ function renderAiRefPanel(){
     fsSection.style.display = "none";
   }
 
-  if (_confirmedPrefs.length > 0){
-    prefSection.style.display = "block";
-    prefList.innerHTML = _confirmedPrefs.map(p => {
-      const pct = Math.round(p.confidence * 100);
-      return `<li>${escapeHtml(p.rule_text)} <span style="color:#8e44ad;font-size:11px">(置信度 ${pct}%·${p.evidence_count}个样本)</span></li>`;
+  if (_criteriaDetails.length > 0){
+    criteriaSection.style.display = "block";
+    criteriaListEl.innerHTML = _criteriaDetails.map(n => {
+      const hardLabel = n.is_hard ? '<span style="color:#e74c3c;font-weight:700">[硬性] </span>' : '';
+      return `<li>${hardLabel}<b>${escapeHtml(n.condition_name)}</b>：${escapeHtml(n.note_text)}</li>`;
     }).join("");
   } else {
-    prefSection.style.display = "none";
+    criteriaSection.style.display = "none";
   }
 }
 
@@ -324,7 +346,7 @@ async function loadList(){
   }
   candidates = d.candidates || [];
   _fewShotCases = d.few_shot_cases || [];
-  _confirmedPrefs = d.confirmed_preferences || [];
+  _criteriaDetails = d.criteria_notes || [];
   renderAiRefPanel();
   if (candidates.length === 0){
     $("left-loading").textContent = "本岗位暂无待处理候选人。";
@@ -392,13 +414,7 @@ function show(){
     $("cand-duplicate").style.display = "none";
   }
 
-  // 水分侦测
   const reason = c.verdict_reason || "";
-  if (reason.includes("[描述笼统]")){
-    $("cand-watermark").style.display = "block";
-  } else {
-    $("cand-watermark").style.display = "none";
-  }
 
   // 符合 / 不符合
   const matches = c.matches || [];
@@ -421,8 +437,7 @@ function show(){
         return `<li><b>${escapeHtml(cond)}</b>${cond&&rs?"：":""}<span class="evidence-text">${escapeHtml(rs)}</span></li>`;
       }).join("");
 
-  $("cand-verdict-reason").textContent = reason
-    ? "AI 结论：" + reason.replace("[描述笼统]","").trim() : "";
+  $("cand-verdict-reason").textContent = reason ? "AI 结论：" + reason : "";
 
   // 备注
   $("cand-note").value = c.latest_note || "";
@@ -611,7 +626,14 @@ $("cand-note").addEventListener("blur", ()=>{ isInputFocused = false; saveNote()
 function prev(){ if (idx > 0){ idx--; show(); } }
 function next(){ if (idx < candidates.length - 1){ idx++; show(); } else { updateCounter(); } }
 
-$("btn-pass").addEventListener("click", ()=> recordOutcome("approved"));
+$("btn-pass").addEventListener("click", () => {
+  const c = candidates[idx];
+  if (c && c.verdict === "黄色") {
+    openCorrectionModal("too_strict");
+    return;
+  }
+  recordOutcome("approved");
+});
 $("btn-fail").addEventListener("click", openRejectModal);
 $("btn-prev").addEventListener("click", prev);
 $("btn-next").addEventListener("click", next);
@@ -655,39 +677,13 @@ function showSimilar(){
 // 不通过弹窗
 function openRejectModal(){
   const c = candidates[idx];
-  if (c && c.verdict === "深绿") {
-    openDeepGreenRejectModal();
+  if (c && (c.verdict === "深绿" || c.verdict === "蓝色")) {
+    openCorrectionModal("too_loose");
     return;
   }
   $("reject-modal").style.display = "flex";
   $("reject-tag-custom").value = "";
   setTimeout(() => $("reject-tag-custom").focus(), 50);
-}
-
-const DG_TAGS = ["跳槽频繁","工作经历太普通","背景不匹配","无法核实关键经历","直觉不好"];
-let _dgSelectedTag = null;
-
-function openDeepGreenRejectModal(){
-  _dgSelectedTag = null;
-  const opts = $("dg-tag-options");
-  opts.innerHTML = DG_TAGS.map(t =>
-    `<button class="tag-opt" data-tag="${escapeHtml(t)}" style="padding:5px 12px;border:1px solid #ddd;border-radius:16px;background:#fff;cursor:pointer;font-size:12px">${escapeHtml(t)}</button>`
-  ).join("");
-  opts.querySelectorAll(".tag-opt").forEach(btn => {
-    btn.addEventListener("click", () => {
-      _dgSelectedTag = btn.dataset.tag;
-      opts.querySelectorAll(".tag-opt").forEach(b => {
-        b.style.background = "#fff";
-        b.style.borderColor = "#ddd";
-        b.style.color = "";
-      });
-      btn.style.background = "#fde8e8";
-      btn.style.borderColor = "#e74c3c";
-      btn.style.color = "#c0392b";
-    });
-  });
-  $("dg-tag-custom").value = "";
-  $("deepgreen-reject-modal").style.display = "flex";
 }
 
 $("btn-reject-cancel").addEventListener("click", ()=>{
@@ -704,30 +700,123 @@ $("reject-tag-custom").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); $("btn-reject-confirm").click(); }
 });
 
-$("btn-dg-cancel").addEventListener("click", ()=>{
-  $("deepgreen-reject-modal").style.display = "none";
+// ── 纠错弹窗 ─────────────────────────────────────────────
+let _cmDirection = null;
+let _cmOutcomeAction = null;
+
+function openCorrectionModal(direction) {
+  const c = candidates[idx];
+  if (!c) return;
+  _cmDirection = direction;
+  _cmOutcomeAction = direction === "too_loose" ? "disapproved" : "approved";
+
+  const isTooLoose = direction === "too_loose";
+  $("cm-title").textContent = isTooLoose
+    ? "⚠ 驳回 AI 推荐 — 标注 AI 哪里判断有误"
+    : "✅ 通过 AI 保守候选人 — 标注 AI 哪里过于严格";
+  $("cm-desc").textContent = isTooLoose
+    ? "AI 评为「" + c.verdict + "」，你选择不通过。选择 AI 判断有误的条件帮助学习（可跳过）："
+    : "AI 评为「黄色」，你选择通过。选择 AI 不符合判断有误的条件帮助学习（可跳过）：";
+
+  const items = isTooLoose ? (c.matches || []) : (c.mismatches || []);
+  const condEls = $("cm-conditions");
+
+  if (items.length === 0) {
+    condEls.innerHTML = '<div style="color:#aaa;font-size:12px;text-align:center;padding:10px">无可标注条件</div>';
+  } else {
+    condEls.innerHTML = items.map(m => {
+      const cond = m["条件"] || "";
+      const detail = isTooLoose ? (m["证据"] || "") : (m["原因"] || "");
+      return `<label style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;cursor:pointer;font-size:12px">
+        <input type="checkbox" class="cm-cond-cb" data-cond="${escapeHtml(cond)}"
+               style="margin-top:2px;flex-shrink:0">
+        <span><b>${escapeHtml(cond)}</b>${cond&&detail?"：":""}<span style="color:#888">${escapeHtml(detail)}</span></span>
+      </label>`;
+    }).join("");
+    condEls.querySelectorAll(".cm-cond-cb").forEach(cb => {
+      cb.addEventListener("change", updateErrorTypeVisibility);
+    });
+  }
+
+  $("cm-error-type-row").style.display = "none";
+  $("cm-hr-note").value = "";
+  $("correction-modal").style.display = "flex";
+}
+
+function updateErrorTypeVisibility() {
+  const anyChecked = $("cm-conditions").querySelectorAll(".cm-cond-cb:checked").length > 0;
+  $("cm-error-type-row").style.display = anyChecked ? "block" : "none";
+}
+
+async function submitCorrectionAndOutcome() {
+  const c = candidates[idx];
+  if (!c) return;
+
+  const checkedBoxes = Array.from($("cm-conditions").querySelectorAll(".cm-cond-cb:checked"));
+  const errorType = $("cm-error-type").value;
+  const hrNote = $("cm-hr-note").value.trim();
+
+  for (const cb of checkedBoxes) {
+    const condName = cb.dataset.cond;
+    if (!condName) continue;
+    try {
+      await fetch("/api/correction/submit", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          evaluation_id: c.evaluation_id,
+          direction: _cmDirection,
+          condition_name: condName,
+          error_type: errorType,
+          evidence_text: "",
+          hr_note: hrNote,
+        }),
+      });
+    } catch(e) { /* non-fatal */ }
+  }
+
+  // If no conditions checked but hr_note was filled, submit one signal with empty condition
+  if (checkedBoxes.length === 0 && hrNote) {
+    try {
+      await fetch("/api/correction/submit", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          evaluation_id: c.evaluation_id,
+          direction: _cmDirection,
+          condition_name: "（综合评价）",
+          error_type: "criterion_misunderstood",
+          evidence_text: "",
+          hr_note: hrNote,
+        }),
+      });
+    } catch(e) { /* non-fatal */ }
+  }
+
+  $("correction-modal").style.display = "none";
+  recordOutcome(_cmOutcomeAction, null);
+}
+
+$("btn-cm-skip").addEventListener("click", () => {
+  $("correction-modal").style.display = "none";
+  recordOutcome(_cmOutcomeAction, null);
 });
 
-$("btn-dg-confirm").addEventListener("click", ()=>{
-  const tag = $("dg-tag-custom").value.trim() || _dgSelectedTag || null;
-  $("deepgreen-reject-modal").style.display = "none";
-  recordOutcome("disapproved", tag);
-});
+$("btn-cm-confirm").addEventListener("click", submitCorrectionAndOutcome);
 
-// 深绿弹窗点击背景关闭
-$("deepgreen-reject-modal").addEventListener("click", e => {
-  if (e.target === $("deepgreen-reject-modal"))
-    $("deepgreen-reject-modal").style.display = "none";
+$("correction-modal").addEventListener("click", e => {
+  if (e.target === $("correction-modal"))
+    $("correction-modal").style.display = "none";
 });
 
 // 键盘
 document.addEventListener("keydown", (e)=>{
   if (isInputFocused) return;
   if ($("reject-modal").style.display === "flex") return;
-  if ($("deepgreen-reject-modal").style.display === "flex") return;
+  if ($("correction-modal").style.display === "flex") return;
   if (e.key === "ArrowLeft"){ e.preventDefault(); prev(); }
   else if (e.key === "ArrowRight"){ e.preventDefault(); next(); }
-  else if (e.key === "Enter"){ e.preventDefault(); recordOutcome("approved"); }
+  else if (e.key === "Enter"){ e.preventDefault(); $("btn-pass").click(); }
   else if (e.key === "Backspace"){ e.preventDefault(); openRejectModal(); }
   else if (e.key === "d" || e.key === "D"){ e.preventDefault(); deleteCurrent(); }
 });
@@ -784,6 +873,26 @@ $("pool-modal").addEventListener("click", e => {
 // 启动
 loadList();
 loadTransferJobs();
+
+// ── 简历 iframe 自动适配宽度 ──────────────────────────────
+(function() {
+  const iframe = $('resume-iframe');
+  iframe.addEventListener('load', function() {
+    const src = iframe.src || '';
+    if (!src || src === 'about:blank' || src.includes('/pdf')) return;
+    try {
+      const doc = iframe.contentDocument;
+      if (!doc || !doc.body) return;
+      requestAnimationFrame(function() {
+        const scrollW = doc.body.scrollWidth;
+        const clientW = iframe.clientWidth;
+        if (scrollW > clientW && clientW > 0) {
+          doc.body.style.zoom = (clientW / scrollW).toFixed(4);
+        }
+      });
+    } catch(e) {}
+  });
+})();
 
 // ── 转移至其他岗位 ──────────────────────────────────────
 async function loadTransferJobs() {

@@ -1,0 +1,348 @@
+{% extends "base.html" %}
+{% block title %}{{ job_name }} · 评估细则管理{% endblock %}
+
+{% block content %}
+<div style="max-width:860px;margin:0 auto;padding:24px 16px">
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+    <div>
+      <h1 style="margin:0;font-size:20px;color:#2c3e50">{{ job_name }} · 评估细则</h1>
+      <p style="margin:6px 0 0;color:#888;font-size:13px">
+        细则由 AI 根据 HR 纠错信号自动生成草稿，HR 确认后注入 AI 评估。
+        <a href="{{ url_for('triage_page', job_name=job_name) }}" style="color:#3498db">← 返回处理台</a>
+      </p>
+    </div>
+    <button onclick="triggerAnalysis()" class="btn btn-primary" style="font-size:13px">
+      🔄 手动触发分析
+    </button>
+  </div>
+
+  <!-- 校准统计（整体） -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+    <div class="stat-card">
+      <div class="stat-num">{{ dg_total }}</div>
+      <div class="stat-label">深绿处理总数</div>
+    </div>
+    <div class="stat-card" style="border-left-color:{% if dg_reject_rate > 25 %}#e74c3c{% elif dg_reject_rate > 12 %}#f39c12{% else %}#27ae60{% endif %}">
+      <div class="stat-num">{{ "%.0f"|format(dg_reject_rate) }}%</div>
+      <div class="stat-label">深绿被否率（越低越好）</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-num">{{ yw_total }}</div>
+      <div class="stat-label">黄色处理总数</div>
+    </div>
+    <div class="stat-card" style="border-left-color:{% if yw_approve_rate > 35 %}#f39c12{% else %}#27ae60{% endif %}">
+      <div class="stat-num">{{ "%.0f"|format(yw_approve_rate) }}%</div>
+      <div class="stat-label">黄色被通过率（越低越好）</div>
+    </div>
+  </div>
+
+  <!-- 模块5：细则效果追踪（确认前 vs 确认后对比） -->
+  {% if effect_stats and effect_stats.split_date %}
+  <div style="background:#f0f7ff;border-radius:8px;padding:14px 16px;margin-bottom:16px;border-left:4px solid #3498db">
+    <div style="font-size:13px;font-weight:700;color:#2c3e50;margin-bottom:10px">
+      📊 细则效果对比（以首条细则确认时间 {{ effect_stats.split_date[:10] }} 为分界）
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:600">细则确认前</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="stat-card" style="padding:10px 12px">
+            <div class="stat-num" style="font-size:18px">{{ effect_stats.before.dg_total }}</div>
+            <div class="stat-label">深绿处理数</div>
+          </div>
+          <div class="stat-card" style="padding:10px 12px;border-left-color:{% if effect_stats.before.dg_reject_rate and effect_stats.before.dg_reject_rate > 25 %}#e74c3c{% elif effect_stats.before.dg_reject_rate and effect_stats.before.dg_reject_rate > 12 %}#f39c12{% else %}#27ae60{% endif %}">
+            <div class="stat-num" style="font-size:18px">{% if effect_stats.before.dg_reject_rate is not none %}{{ "%.0f"|format(effect_stats.before.dg_reject_rate) }}%{% else %}—{% endif %}</div>
+            <div class="stat-label">深绿被否率</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:#888;margin-bottom:6px;font-weight:600">细则确认后</div>
+        {% if effect_stats.after %}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="stat-card" style="padding:10px 12px">
+            <div class="stat-num" style="font-size:18px">{{ effect_stats.after.dg_total }}</div>
+            <div class="stat-label">深绿处理数</div>
+          </div>
+          <div class="stat-card" style="padding:10px 12px;border-left-color:{% if effect_stats.after.dg_reject_rate and effect_stats.after.dg_reject_rate > 25 %}#e74c3c{% elif effect_stats.after.dg_reject_rate and effect_stats.after.dg_reject_rate > 12 %}#f39c12{% else %}#27ae60{% endif %}">
+            <div class="stat-num" style="font-size:18px">{% if effect_stats.after.dg_reject_rate is not none %}{{ "%.0f"|format(effect_stats.after.dg_reject_rate) }}%{% else %}—{% endif %}</div>
+            <div class="stat-label">深绿被否率</div>
+          </div>
+        </div>
+        {% else %}
+        <div style="color:#aaa;font-size:12px;padding:16px 0">确认后暂无足够数据</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- 模块2：错误模式库 —— 纠错信号积累进度 -->
+  {% if signal_counts %}
+  <section style="margin-bottom:24px">
+    <div style="font-size:16px;font-weight:700;color:#2c3e50;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+      📈 纠错信号积累（触发 3 次后自动生成草稿）
+    </div>
+    <div style="background:#fff;border-radius:8px;border:1px solid #eee;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.04)">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="background:#f8f9fa;border-bottom:1px solid #eee">
+            <th style="text-align:left;padding:8px 14px;color:#555;font-weight:600">评估条件</th>
+            <th style="text-align:center;padding:8px 10px;color:#555;font-weight:600">方向</th>
+            <th style="text-align:center;padding:8px 10px;color:#555;font-weight:600">累计次数</th>
+            <th style="text-align:center;padding:8px 10px;color:#555;font-weight:600">待处理</th>
+            <th style="text-align:left;padding:8px 14px;color:#555;font-weight:600">进度</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in signal_counts %}
+          <tr style="border-bottom:1px solid #f5f5f5">
+            <td style="padding:8px 14px;color:#2c3e50;font-weight:600">{{ row.condition_name }}</td>
+            <td style="padding:8px 10px;text-align:center">
+              {% if row.direction == 'too_loose' %}
+              <span style="background:#fde8e8;color:#e74c3c;border-radius:4px;padding:2px 7px;font-size:11px">过松</span>
+              {% else %}
+              <span style="background:#eaf4fb;color:#2980b9;border-radius:4px;padding:2px 7px;font-size:11px">过严</span>
+              {% endif %}
+            </td>
+            <td style="padding:8px 10px;text-align:center;color:#2c3e50;font-weight:700">{{ row.total_count }}</td>
+            <td style="padding:8px 10px;text-align:center;color:{% if row.pending_count > 0 %}#e67e22{% else %}#27ae60{% endif %}">{{ row.pending_count }}</td>
+            <td style="padding:8px 14px">
+              {% set filled = [row.total_count, 3]|min %}
+              <div style="display:flex;align-items:center;gap:8px">
+                <div style="flex:1;height:6px;background:#f0f0f0;border-radius:3px;overflow:hidden">
+                  <div style="height:100%;background:{% if row.total_count >= 3 %}#27ae60{% else %}#f39c12{% endif %};width:{{ ([row.total_count, 3]|min / 3 * 100)|int }}%"></div>
+                </div>
+                {% if row.total_count >= 3 %}
+                <span style="font-size:11px;color:#27ae60">已触发</span>
+                {% else %}
+                <span style="font-size:11px;color:#aaa">差 {{ 3 - row.total_count }} 次</span>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- 待确认草稿 -->
+  <section style="margin-bottom:28px">
+    <div style="font-size:16px;font-weight:700;color:#2c3e50;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+      📝 待确认草稿
+      {% if pending %}
+      <span style="background:#e67e22;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px">{{ pending|length }}</span>
+      {% endif %}
+    </div>
+
+    {% if not pending %}
+    <div style="background:#f8f9fa;border-radius:8px;padding:20px;text-align:center;color:#aaa;font-size:13px">
+      暂无待确认草稿。当同一条件积累 ≥3 次纠错后，AI 将自动生成草稿。
+    </div>
+    {% else %}
+    {% for note in pending %}
+    <div class="criteria-card pending" id="note-{{ note.id }}">
+      <div class="criteria-header">
+        <span class="criteria-cond">{{ note.condition_name }}</span>
+        <span class="criteria-hard-badge {{ 'hard' if note.is_hard else 'soft' }}">
+          {{ '[硬性]' if note.is_hard else '[软性]' }}
+        </span>
+        <span style="color:#aaa;font-size:11px;margin-left:auto">来自 {{ note.source_signal_count }} 条纠错 · {{ note.created_at[:10] }}</span>
+      </div>
+      <div class="criteria-body">
+        <textarea class="criteria-text-edit" id="text-{{ note.id }}" rows="2"
+                  style="width:100%;padding:8px;border:1px solid #ddd;border-radius:5px;font-size:13px;
+                         resize:vertical;box-sizing:border-box">{{ note.note_text }}</textarea>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
+          <label style="font-size:12px;color:#555;display:flex;align-items:center;gap:5px;cursor:pointer">
+            <input type="checkbox" class="hard-toggle" id="hard-{{ note.id }}"
+                   {{ 'checked' if note.is_hard else '' }}>
+            标记为硬性条件（不满足则排除）
+          </label>
+          <div style="margin-left:auto;display:flex;gap:8px">
+            <button onclick="dismissNote({{ note.id }})" class="btn" style="font-size:12px;color:#e74c3c;border-color:#e74c3c">驳回</button>
+            <button onclick="confirmNote({{ note.id }})" class="btn btn-primary" style="font-size:12px">确认采纳</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+  </section>
+
+  <!-- 已确认细则 -->
+  <section style="margin-bottom:28px">
+    <div style="font-size:16px;font-weight:700;color:#2c3e50;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+      ✅ 已确认细则（当前注入 AI 评估）
+      {% if confirmed %}
+      <span style="background:#27ae60;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px">{{ confirmed|length }}</span>
+      {% endif %}
+    </div>
+
+    {% if not confirmed %}
+    <div style="background:#f8f9fa;border-radius:8px;padding:20px;text-align:center;color:#aaa;font-size:13px">
+      暂无已确认细则。
+    </div>
+    {% else %}
+    {% for note in confirmed %}
+    <div class="criteria-card confirmed" id="note-{{ note.id }}">
+      <div class="criteria-header">
+        <span class="criteria-cond">{{ note.condition_name }}</span>
+        <span class="criteria-hard-badge {{ 'hard' if note.is_hard else 'soft' }}">
+          {{ '[硬性]' if note.is_hard else '[软性]' }}
+        </span>
+        <span style="color:#aaa;font-size:11px;margin-left:auto">{{ note.confirmed_at[:10] if note.confirmed_at else note.created_at[:10] }}</span>
+      </div>
+      <div class="criteria-body">
+        <div style="font-size:13px;color:#333;line-height:1.6;padding:6px 0">{{ note.note_text }}</div>
+        <div style="margin-top:6px">
+          <button onclick="revokeNote({{ note.id }}, '{{ note.note_text|replace("'","\\'")|truncate(40) }}')"
+                  class="btn" style="font-size:11px;color:#888;border-color:#ddd">撤销确认</button>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+  </section>
+
+  <!-- 模块6：定期细则整理（超过30天未复查） -->
+  {% if stale_notes %}
+  <section style="margin-bottom:28px">
+    <div style="font-size:16px;font-weight:700;color:#2c3e50;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+      🗓️ 待整理细则（距上次复查 ≥30 天）
+      <span style="background:#e67e22;color:#fff;border-radius:10px;padding:1px 8px;font-size:12px">{{ stale_notes|length }}</span>
+    </div>
+    <div style="background:#fffbf0;border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:12px;color:#888">
+      以下细则已超过 30 天未复查。请确认它们仍然适用，点击「标记已整理」后计时重置。
+    </div>
+    {% for note in stale_notes %}
+    <div class="criteria-card confirmed" id="stale-note-{{ note.id }}" style="border-left-color:#e67e22">
+      <div class="criteria-header">
+        <span class="criteria-cond">{{ note.condition_name }}</span>
+        <span class="criteria-hard-badge {{ 'hard' if note.is_hard else 'soft' }}">
+          {{ '[硬性]' if note.is_hard else '[软性]' }}
+        </span>
+        <span style="color:#e67e22;font-size:11px;margin-left:4px">已 {{ note.days_since_review }} 天未复查</span>
+        <span style="color:#aaa;font-size:11px;margin-left:auto">上次确认：{{ note.confirmed_at[:10] if note.confirmed_at else '—' }}</span>
+      </div>
+      <div class="criteria-body">
+        <div style="font-size:13px;color:#333;line-height:1.6;padding:4px 0">{{ note.note_text }}</div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button onclick="refreshNote({{ note.id }})" class="btn btn-primary" style="font-size:12px">✓ 标记已整理</button>
+          <button onclick="revokeNote({{ note.id }}, '{{ note.note_text|replace("'","\\'")|truncate(40) }}')"
+                  class="btn" style="font-size:12px;color:#888;border-color:#ddd">撤销此细则</button>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <!-- 已驳回 -->
+  {% if dismissed %}
+  <details style="margin-bottom:20px">
+    <summary style="cursor:pointer;font-size:13px;color:#aaa;padding:6px 0">
+      已驳回 ({{ dismissed|length }})
+    </summary>
+    <div style="margin-top:8px">
+    {% for note in dismissed %}
+    <div class="criteria-card dismissed" style="opacity:0.5">
+      <div class="criteria-header">
+        <span class="criteria-cond">{{ note.condition_name }}</span>
+        <span style="color:#aaa;font-size:11px">{{ note.note_text[:60] }}{{ '…' if note.note_text|length > 60 }}</span>
+      </div>
+    </div>
+    {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.stat-card {
+  background:#fff;border-radius:8px;padding:14px 16px;border-left:4px solid #3498db;
+  box-shadow:0 1px 4px rgba(0,0,0,.06);
+}
+.stat-num { font-size:24px;font-weight:700;color:#2c3e50; }
+.stat-label { font-size:11px;color:#888;margin-top:2px; }
+.criteria-card {
+  background:#fff;border-radius:8px;border:1px solid #eee;margin-bottom:10px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.criteria-card.pending { border-left:4px solid #e67e22; }
+.criteria-card.confirmed { border-left:4px solid #27ae60; }
+.criteria-card.dismissed { border-left:4px solid #ccc; }
+.criteria-header {
+  display:flex;align-items:center;gap:10px;padding:10px 14px;
+  border-bottom:1px solid #f0f0f0;
+}
+.criteria-body { padding:10px 14px 12px; }
+.criteria-cond { font-weight:700;color:#2c3e50;font-size:14px; }
+.criteria-hard-badge { font-size:11px;padding:2px 7px;border-radius:10px;font-weight:700; }
+.criteria-hard-badge.hard { background:#fde8e8;color:#e74c3c; }
+.criteria-hard-badge.soft { background:#eaf4fb;color:#2980b9; }
+</style>
+<script>
+const JOB_NAME = {{ job_name|tojson }};
+
+async function confirmNote(noteId) {
+  const textEl = document.getElementById("text-" + noteId);
+  const hardEl = document.getElementById("hard-" + noteId);
+  const noteText = textEl ? textEl.value.trim() : "";
+  const isHard = hardEl ? hardEl.checked : false;
+  if (!noteText) { alert("细则内容不能为空"); return; }
+  const r = await fetch("/api/criteria/confirm/" + noteId, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({note_text: noteText, is_hard: isHard}),
+  });
+  const d = await r.json();
+  if (d.ok) { location.reload(); }
+  else { alert("操作失败：" + (d.message || "")); }
+}
+
+async function dismissNote(noteId) {
+  if (!confirm("确认驳回此细则草稿？")) return;
+  const r = await fetch("/api/criteria/dismiss/" + noteId, {method:"POST"});
+  const d = await r.json();
+  if (d.ok) { location.reload(); }
+  else { alert("操作失败：" + (d.message || "")); }
+}
+
+async function revokeNote(noteId, preview) {
+  if (!confirm("撤销确认后此细则将停止注入 AI 评估，确认？")) return;
+  const r = await fetch("/api/criteria/dismiss/" + noteId, {method:"POST"});
+  const d = await r.json();
+  if (d.ok) { location.reload(); }
+  else { alert("操作失败：" + (d.message || "")); }
+}
+
+async function refreshNote(noteId) {
+  const r = await fetch("/api/criteria/refresh/" + noteId, {method:"POST"});
+  const d = await r.json();
+  if (d.ok) {
+    const el = document.getElementById("stale-note-" + noteId);
+    if (el) el.remove();
+  } else { alert("操作失败：" + (d.message || "")); }
+}
+
+async function triggerAnalysis() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = "分析中…";
+  try {
+    const r = await fetch("/api/audit/refresh/" + encodeURIComponent(JOB_NAME), {method:"POST"});
+    const d = await r.json();
+    if (d.ok) { location.reload(); }
+    else { alert("分析失败：" + (d.message || "")); }
+  } catch(e) { alert("网络错误：" + e.message); }
+  finally { btn.disabled = false; btn.textContent = "🔄 手动触发分析"; }
+}
+</script>
+{% endblock %}

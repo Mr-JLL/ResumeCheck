@@ -46,40 +46,15 @@ VALID_VERDICTS = {"深绿", "蓝色", "黄色", "排除"}
 # Few-Shot 学习增强
 # =============================================================================
 
-def build_preference_section(job_name):
+def build_few_shot_section(job_name, max_examples=5):
     """
-    从 preference_rules 表中读取已确认（confirmed）的偏好规则，
-    构建注入到 system prompt 的软性偏好段落。
+    从已录用/已通过候选人中取最多5个，构建 Few-Shot 参考。
+    跳过 matches 为空的转移记录（质量低）。
     """
-    job = database.get_job(job_name)
-    job_id = job["id"] if job else None
-
-    rules = database.list_preference_rules(job_id=job_id, status="confirmed")
-    if not rules:
-        return ""
-
-    lines = [
-        "",
-        "# 过往筛选偏好（HR 行为总结，仅作软性参考）",
-        "",
-        "**说明**：以下偏好来自 HR 过去的录用/淘汰决策，置信度越高越值得重视。",
-        "当候选人在以下维度明显符合或明显违背偏好时，可适当影响 verdict 边界判断。",
-        "**但不能因此否定硬性规则的判定结论。**",
-        "",
-    ]
-    for r in rules[:8]:  # 最多注入8条，防止 prompt 过长
-        conf_pct = int(r["confidence"] * 100)
-        lines.append(f"- {r['rule_text']}（置信度 {conf_pct}%，样本数 {r['evidence_count']}）")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def build_few_shot_section(job_name, max_examples=3):
-    """
-    数据库中若有该岗位的录用样本（hired/approved），构建 Few-Shot 参考。
-    只展示关键事实，不展示历史 pros，避免污染当前规则。
-    """
-    examples = database.get_hired_candidates(job_name, limit=max_examples)
+    all_examples = database.get_hired_candidates(job_name, limit=20)
+    # 过滤掉转移进来的空 matches 记录
+    examples = [e for e in all_examples
+                if e.get("matches_json") and e["matches_json"] != "[]"][:max_examples]
     if not examples:
         return ""
 
@@ -87,9 +62,8 @@ def build_few_shot_section(job_name, max_examples=3):
         "",
         "# 历史录用案例（仅作背景参考）",
         "",
-        "**重要约束**：以下是该岗位过去真正录用的候选人简要画像。",
-        "它们仅供你**理解公司过往的录用偏好**，**不能凌驾于上面的评判规则之上**。",
-        "如果当前候选人不符合上面的规则，即使与下方案例相似，也必须按规则判定。",
+        "**重要约束**：以下是该岗位过去真正录用的候选人简要画像及符合原因。",
+        "仅供理解录用偏好，不能凌驾于岗位要求和评估细则之上。",
         "",
     ]
     for i, ex in enumerate(examples, 1):
@@ -97,6 +71,10 @@ def build_few_shot_section(job_name, max_examples=3):
             structured = json.loads(ex["structured_json"]) if ex.get("structured_json") else {}
         except Exception:
             structured = {}
+        try:
+            matches = json.loads(ex["matches_json"]) if ex.get("matches_json") else []
+        except Exception:
+            matches = []
         name = ex.get("name", "已录用候选人")
         wh = structured.get("work_history", []) or []
         years = structured.get("total_work_years", "?")
@@ -107,12 +85,43 @@ def build_few_shot_section(job_name, max_examples=3):
             f"{w.get('company','?')}({w.get('role','')})"
             for w in wh[:2] if isinstance(w, dict)
         )
+        match_summary = "、".join(
+            m.get("条件", "") for m in matches[:3] if m.get("条件")
+        ) or "未记录"
         lines.append(
             f"- 案例{i}：{name} | {first_degree} | {years}年经验 | "
             f"英语:{english} | 行业:{','.join(industries[:3]) or '未知'} | "
-            f"主要经历:{roles or '未明确'}"
+            f"主要经历:{roles or '未明确'} | 录用主因:{match_summary}"
         )
     lines.append("")
+    return "\n".join(lines)
+
+
+def build_criteria_notes_section(job_name):
+    """
+    注入已确认的评估细则（job_criteria_notes），替代原偏好规则。
+    细则分硬性（[硬性]）和软性（[软性]）两类，AI 必须按细则标准判断证据充分性。
+    """
+    job = database.get_job(job_name)
+    if not job:
+        return ""
+    notes = database.get_confirmed_criteria_notes(job["id"])
+    if not notes:
+        return ""
+
+    lines = [
+        "",
+        "# 该岗位评估细则（根据历史纠错积累，优先级高于岗位描述，严格执行）",
+        "",
+        "**说明**：以下细则规定了每个条件的证据充分性标准，你必须按此标准判断，",
+        "不得自行调高或调低要求。标注 [硬性] 的条件若未通过，必须设 has_hard_fail=true。",
+        "",
+    ]
+    for n in notes:
+        hard_label = "[硬性]" if n["is_hard"] else "[软性]"
+        lines.append(f"## {hard_label} 条件：{n['condition_name']}")
+        lines.append(n["note_text"])
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -124,11 +133,12 @@ OUTPUT_INSTRUCTION = """
 # 输出要求（严格执行）
 
 ## 第一步：内部推理（thinking 字段）
-逐条扫描岗位的硬性/软性要求，对每个要求：
+逐条扫描岗位要求，对每个要求：
 1. 在简历的 work_history → responsibilities_verbatim、certifications、key_projects 等字段中
    寻找直接支持或否定该要求的**原文句子**。
 2. 引用原文时使用「原文：『…』」格式，禁止改写或概括。
 3. 找不到证据的要求，标注「无明确证据」。
+4. 若存在评估细则，必须按细则中规定的证据标准判断，不得自行降低或提高要求。
 
 ## 第二步：汇总输出 JSON
 
@@ -154,32 +164,31 @@ OUTPUT_INSTRUCTION = """
 - **禁止主观形容词**：禁止"优秀/良好/不错/一般/较强"
 - 直接陈述事实
 
-## 水分侦测（在 verdict_reason 中标注）
+## verdict 取值规则
 
-若该候选人 work_history 各段的 responsibilities_verbatim 主要是「负责/参与/协助/跟进/支持」
-等虚词，**几乎没有任何量化数据**（百分比、时间、数量、金额），
-在 verdict_reason 末尾追加 ` [描述笼统]` 标记。
-**这个标记不影响 verdict**，仅作信息提示。
+**硬性判定（has_hard_fail）**：
+- 仅当评估细则中有 [硬性] 标记的条件，且候选人未通过该条件时，才设 has_hard_fail=true
+- 没有评估细则时，不得自行将任何岗位要求升级为硬性条件
+- has_hard_fail=true 时 verdict 必须为 "排除"
 
-## verdict 取值
-
-- "排除" = 任何硬性要求不满足（has_hard_fail 必须为 true）
-- "深绿" = 全部硬性 + 全部软性要求都符合
-- "蓝色" = 全部硬性符合 + 一项软性轻微不足
-- "黄色" = 多项软性不足或边界情况，需人工复核
+**等级判定**：
+- "排除" = has_hard_fail 为 true
+- "深绿" = 全部条件都有充分证据支持（包括评估细则中规定的证据标准）
+- "蓝色" = 全部重要条件符合，一项次要条件轻微不足
+- "黄色" = 多项条件证据不足或边界情况，需人工复核
 """
 
 
 def build_judge_messages(structured_resume, job_prompt, job_name):
     """构建判断阶段的 LLM messages"""
     few_shot = build_few_shot_section(job_name)
-    preference = build_preference_section(job_name)
+    criteria_notes = build_criteria_notes_section(job_name)
 
     system_prompt = f"""{job_prompt}
 
 {few_shot}
 
-{preference}
+{criteria_notes}
 
 # 输入数据说明
 
