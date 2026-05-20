@@ -27,6 +27,10 @@
 data/
 工作区_*/
 
+# 岗位配置与 prompt 版本（不上传）
+job_configs/
+prompt_versions/
+
 # 校准题库
 校准题库_PDF/
 校准题库_负样本_HTML/
