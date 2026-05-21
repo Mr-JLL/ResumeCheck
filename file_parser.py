@@ -1,7 +1,7 @@
 """
 file_parser.py
 简历文件文字提取模块
-支持：文字版PDF（pdfplumber）、Word文档（python-docx）、扫描版PDF（PaddleOCR）
+支持：文字版PDF（PyMuPDF/fitz）、Word文档（python-docx）、扫描版PDF（PaddleOCR）
 扫描版判断：有效汉字 < 50 时自动触发 OCR
 Windows注意：pdf2image 需要 Poppler，会自动从常见路径查找或跳过
 """
@@ -13,12 +13,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 # ── 可选依赖懒加载 ──────────────────────────────────────────
+# 使用 PyMuPDF (fitz) 替代 pdfplumber，无 pdfminer.six 版本冲突
 try:
-    import pdfplumber
-    HAS_PDFPLUMBER = True
+    import fitz  # PyMuPDF
+    HAS_PDFPLUMBER = True   # 变量名保持兼容，实际用 fitz
 except ImportError:
     HAS_PDFPLUMBER = False
-    logger.warning("pdfplumber 未安装，文字版PDF解析不可用。pip install pdfplumber")
+    logger.warning("PyMuPDF 未安装，文字版PDF解析不可用。pip install pymupdf")
 
 try:
     from docx import Document as DocxDocument
@@ -108,13 +109,13 @@ def _is_pdf_scanned(text: str) -> bool:
 
 
 def _extract_pdf_text(file_path: str) -> str:
-    """pdfplumber 提取文字版PDF"""
+    """PyMuPDF (fitz) 提取文字版PDF"""
     if not HAS_PDFPLUMBER:
-        raise RuntimeError("pdfplumber 未安装，无法提取文字版PDF")
+        raise RuntimeError("PyMuPDF 未安装，无法提取文字版PDF")
     text_parts = []
-    with pdfplumber.open(file_path) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
+    with fitz.open(file_path) as pdf:
+        for page in pdf:
+            t = page.get_text()
             if t:
                 text_parts.append(t)
     return "\n".join(text_parts)

@@ -1,615 +1,980 @@
 {% extends "base.html" %}
-{% block title %}Prompt 编辑 - {{ job_name }}{% endblock %}
+{% block title %}AI 评估配置 - {{ job_name }}{% endblock %}
 
 {% block content %}
-<h1 class="page-title">Prompt 编辑：{{ job_name }}</h1>
+<h1 class="page-title">AI 评估配置：{{ job_name }}</h1>
 
-<div class="info-card">
-  <h3>使用说明</h3>
-  <ul>
-    <li>这是 AI 评估该岗位时使用的核心指令。修改后立即生效，不需要重启。</li>
-    <li>每次保存系统会<strong>自动备份当前版本</strong>，可在右侧版本列表回滚。</li>
-    <li>建议先用「沙盒测试」在 5 份现有候选人上试跑，确认无误再保存。</li>
-    <li>修改完成后，建议进入处理台页面点「重新评估全部」让 AI 用新 Prompt 重跑。</li>
-  </ul>
+<!-- 标签页切换 -->
+<div style="display:flex;gap:0;border-bottom:2px solid #2980b9;margin-bottom:20px">
+  <button id="tab-ai" onclick="switchTab('ai')"
+    style="padding:9px 22px;border:none;border-radius:6px 6px 0 0;background:#2980b9;color:#fff;font-weight:600;font-size:14px;cursor:pointer">
+    AI 评估配置
+  </button>
+  <button id="tab-pre" onclick="switchTab('pre')"
+    style="padding:9px 22px;border:none;border-radius:6px 6px 0 0;background:#ecf0f1;color:#555;font-weight:600;font-size:14px;cursor:pointer;margin-left:4px">
+    预筛硬规则
+  </button>
 </div>
 
-<div class="prompt-layout">
-  <div class="prompt-editor-col">
-    <textarea id="prompt-text" rows="30" spellcheck="false">{{ prompt_text }}</textarea>
-    <div class="action-panel">
-      <button class="btn btn-primary btn-lg" id="btn-save">💾 保存</button>
-      <button class="btn btn-success btn-lg" id="btn-sandbox">🧪 沙盒测试（5份样本）</button>
-      <button class="btn btn-lg" id="btn-restore-factory" style="background: #ef6c00; color: #fff; border-color: #ef6c00;">恢复出厂默认</button>
-      <a class="btn" href="{{ url_for('cards_page', job_name=job_name) }}">返回</a>
+<!-- ══════════════ Tab 1: AI 评估配置 ══════════════ -->
+<div id="panel-ai">
+  <div style="display:flex;gap:20px;align-items:flex-start">
+
+    <!-- 左列 -->
+    <div style="flex:2;min-width:0">
+
+      <!-- ① 上下文文本 -->
+      <div style="margin-bottom:16px">
+        <div style="font-weight:600;font-size:14px;margin-bottom:6px;color:#2c3e50">
+          岗位上下文（职责描述 + 证据原则）
+          <span style="font-weight:400;font-size:12px;color:#888">—— 不含规则，由 AI 评判规则单独管理</span>
+        </div>
+        <textarea id="prompt-text" rows="12" spellcheck="false"
+          style="width:100%;box-sizing:border-box;font-family:monospace;font-size:13px;
+                 padding:10px;border:1px solid #ccc;border-radius:6px;resize:vertical">{{ prompt_text }}</textarea>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center">
+          <button class="btn btn-primary" id="btn-save">💾 保存上下文</button>
+          <button class="btn" id="btn-preview-full"
+            style="background:#e8f5e9;border-color:#81c784;color:#2e7d32">👁 查看最终注入 Prompt</button>
+          <button class="btn" id="btn-restore-factory"
+            style="background:#ef6c00;color:#fff;border-color:#ef6c00">恢复出厂默认</button>
+          <a class="btn" href="{{ url_for('cards_page', job_name=job_name) }}">返回处理台</a>
+        </div>
+        <div id="save-result" style="margin-top:6px"></div>
+      </div>
+
+      <!-- ② AI 评判规则 -->
+      <div style="border:1px solid #d0e8ff;border-radius:8px;padding:14px;background:#f7fbff">
+        <div style="font-weight:600;font-size:14px;margin-bottom:4px;color:#1a5276">
+          AI 评判规则
+        </div>
+        <div style="font-size:12px;color:#666;margin-bottom:12px">
+          每条规则包含名称、描述、类型（硬性/软性/加分）和证据标准。
+          规则由 AI 在评判时动态渲染注入 Prompt，与上下文分离管理。
+        </div>
+
+        <!-- 规则卡片列表 -->
+        <div id="eval-rule-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+          <div style="color:#bbb;font-size:13px;text-align:center;padding:16px">加载中…</div>
+        </div>
+
+        <!-- 新增规则表单 -->
+        <details id="add-eval-rule-form" style="border:1px dashed #aaa;border-radius:6px;padding:10px;background:#fff">
+          <summary style="cursor:pointer;font-weight:600;font-size:13px;color:#2c3e50">
+            ＋ 新增评判规则
+          </summary>
+          <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;gap:8px">
+              <div style="flex:1">
+                <label style="font-size:12px;color:#555">规则名称</label>
+                <input id="new-rule-name" type="text" placeholder="如：学历、英语、年限"
+                  style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+              </div>
+              <div style="width:120px">
+                <label style="font-size:12px;color:#555">类型</label>
+                <select id="new-rule-type"
+                  style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+                  <option value="hard">🔴 硬性</option>
+                  <option value="soft" selected>🟡 软性</option>
+                  <option value="bonus">🟢 加分</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label style="font-size:12px;color:#555">规则描述</label>
+              <textarea id="new-rule-desc" rows="2" placeholder="对该条规则的具体说明"
+                style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;resize:vertical"></textarea>
+            </div>
+            <div>
+              <label style="font-size:12px;color:#555">证据标准（evidence_hint，可选）</label>
+              <input id="new-rule-hint" type="text" placeholder="告诉 AI 什么算有效证据，什么不算"
+                style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+            </div>
+            <button id="btn-add-eval-rule" class="btn btn-primary" style="align-self:flex-start">添加规则</button>
+          </div>
+        </details>
+
+        <div style="display:flex;gap:8px;margin-top:12px;align-items:center">
+          <button id="btn-save-eval-rules" class="btn btn-primary">💾 保存评判规则</button>
+          <span id="eval-rules-status" style="font-size:12px;color:#888"></span>
+        </div>
+      </div>
     </div>
-    <div id="save-result"></div>
-    <div id="sandbox-result" class="sandbox-result"></div>
+
+    <!-- 右列 -->
+    <div style="flex:1;min-width:200px">
+
+      <!-- 沙盒测试 -->
+      <div style="border:1px solid #e0e0e0;border-radius:8px;padding:12px;margin-bottom:16px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px">🧪 沙盒测试</div>
+        <div style="font-size:12px;color:#666;margin-bottom:8px">
+          用当前上下文 + 规则在已有候选人中抽样评估，不写入数据库。
+        </div>
+        <button id="btn-sandbox" class="btn btn-success" style="width:100%">
+          运行沙盒（5份样本）
+        </button>
+      </div>
+
+      <!-- 版本历史 -->
+      <div style="border:1px solid #e0e0e0;border-radius:8px;padding:12px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px">📚 版本历史</div>
+        {% if versions %}
+          <ul style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px">
+            {% for v in versions %}
+              <li style="display:flex;justify-content:space-between;align-items:center;font-size:12px">
+                <span style="color:#555">{{ v.timestamp }}</span>
+                <button class="btn btn-link btn-restore-version" data-ts="{{ v.timestamp }}"
+                  style="font-size:12px;padding:2px 6px">回滚</button>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p style="font-size:12px;color:#aaa;margin:0">暂无历史备份。</p>
+        {% endif %}
+      </div>
+    </div>
   </div>
 
-  <div class="prompt-versions-col">
-    <h3 class="section-title">版本历史</h3>
-    {% if versions %}
-      <ul class="version-list">
-        {% for v in versions %}
-          <li>
-            <span>{{ v.timestamp }}</span>
-            <button class="btn btn-link btn-restore-version" data-ts="{{ v.timestamp }}">回滚到此版本</button>
-          </li>
-        {% endfor %}
-      </ul>
-    {% else %}
-      <p>暂无历史备份。</p>
-    {% endif %}
-  </div>
+  <!-- 沙盒结果 -->
+  <div id="sandbox-result" style="margin-top:16px"></div>
 </div>
-<!-- 预筛规则编辑器 -->
-<div style="margin-top:28px">
-  <h2 class="page-title" style="font-size:18px">⚙️ 预筛硬规则编辑器</h2>
-  <div class="info-card" style="margin-bottom:14px">
-    <ul style="margin:0;padding-left:18px;font-size:13px;color:#555">
-      <li>预筛规则是<b>硬性排除</b>——不满足的候选人直接排除，不消耗 AI 调用。</li>
-      <li>只适合客观可量化的条件：年龄上限、最低学历、最低工作年限、必须持有的证书等。</li>
-      <li>行业偏好、技能深度、团队管理经验等软性条件请写在上方的 <b>AI Prompt</b> 里，由 AI 判断。</li>
-      <li>支持字段：<code>age</code>（年龄）/ <code>first_degree</code>（第一学历）/ <code>total_work_years</code>（工作年限）/ <code>certifications</code>（证书列表）/ <code>industry_tags</code>（行业标签）/ <code>major</code>（专业）</li>
-    </ul>
+
+<!-- ══════════════ Tab 2: 预筛硬规则 ══════════════ -->
+<div id="panel-pre" style="display:none">
+
+  <div class="info-card" style="margin-bottom:16px;border-left:4px solid #e74c3c">
+    <b>⚠ 预筛规则是硬性排除</b> ── 不满足的候选人直接排除，不消耗 AI 调用。
+    仅适合客观可量化条件（年龄上限、最低学历、最低年限、必须证书等）。
+    行业偏好、技能深度、管理经验等软性判断请在「AI 评估配置」标签页中通过规则描述来告知 AI。
   </div>
 
-  <!-- ① 从 JD 生成 -->
-  <details id="jd-section" style="margin-bottom:16px;border:1px solid #d0e8ff;border-radius:8px;padding:12px;background:#f0f7ff">
-    <summary style="cursor:pointer;font-weight:600;font-size:13px;color:#1a5276">
-      📋 从招聘需求一键生成规则（新功能）
+  <!-- JD 生成（默认展开，不用 details） -->
+  <div id="jd-section" style="margin-bottom:20px;border:1px solid #d0e8ff;border-radius:8px;padding:14px;background:#f0f7ff">
+    <div style="font-weight:600;font-size:13px;color:#1a5276;margin-bottom:8px">
+      📋 从招聘需求一键生成规则
+    </div>
+    <p style="font-size:12px;color:#666;margin:0 0 8px">
+      粘贴岗位 JD 或用自然语言描述招聘要求，AI 自动拆分：客观条件→硬规则，主观条件→Prompt 建议。<b>仅生成预览，不自动保存。</b>
+    </p>
+    <textarea id="jd-input" rows="5"
+      placeholder="例如：要求全日制本科及以上学历，年龄35岁以内，至少3年汽车行业工作经验…"
+      style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #aac;border-radius:6px;font-size:13px;resize:vertical"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+      <button id="btn-jd-generate" class="btn btn-primary" style="white-space:nowrap">🧠 生成预览</button>
+      <span id="jd-status" style="font-size:12px;color:#888"></span>
+    </div>
+    <div id="jd-preview" style="display:none;margin-top:12px">
+      <div id="jd-rules-preview" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+      <div id="jd-prompt-preview-wrap" style="display:none">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px;color:#1a5276">建议追加到 AI Prompt 的软性说明：</div>
+        <div id="jd-prompt-preview"
+          style="background:#fff8e1;border:1px solid #f0c040;border-radius:6px;padding:8px 10px;font-size:12px;color:#555;white-space:pre-wrap"></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button id="btn-jd-apply" class="btn btn-success" style="white-space:nowrap">✅ 将规则加入编辑器</button>
+        <button id="btn-jd-apply-prompt" class="btn" style="display:none;white-space:nowrap">📝 将软性说明追加到 Prompt</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 手动新增规则（表单形式） -->
+  <details id="add-prefilter-form" style="margin-bottom:16px;border:1px dashed #aaa;border-radius:6px;padding:10px;background:#fafafa">
+    <summary style="cursor:pointer;font-weight:600;font-size:13px;color:#2c3e50">
+      ＋ 手动新增预筛规则
     </summary>
-    <div style="margin-top:10px">
-      <p style="font-size:12px;color:#666;margin:0 0 8px">粘贴岗位 JD 或用自然语言描述招聘要求，AI 自动拆分：客观条件→硬规则，主观条件→Prompt 补充建议。<b>仅生成预览，不自动保存。</b></p>
-      <textarea id="jd-input" rows="5" placeholder="例如：要求全日制本科及以上学历，年龄35岁以内，至少3年汽车行业工作经验，熟悉IATF16949体系，有压铸工艺经验优先，英语能基本沟通…"
-                style="width:100%;box-sizing:border-box;padding:8px;border:1px solid #aac;border-radius:6px;font-size:13px;resize:vertical"></textarea>
-      <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
-        <button id="btn-jd-generate" class="btn btn-primary" style="white-space:nowrap">🧠 生成预览</button>
-        <span id="jd-status" style="font-size:12px;color:#888"></span>
-      </div>
-      <!-- 预览区 -->
-      <div id="jd-preview" style="display:none;margin-top:12px">
-        <div id="jd-rules-preview" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
-        <div id="jd-prompt-preview-wrap" style="display:none">
-          <div style="font-weight:600;font-size:13px;margin-bottom:4px;color:#1a5276">建议追加到 AI Prompt 的软性说明：</div>
-          <div id="jd-prompt-preview" style="background:#fff8e1;border:1px solid #f0c040;border-radius:6px;padding:8px 10px;font-size:12px;color:#555;white-space:pre-wrap"></div>
+    <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;gap:8px">
+        <div style="flex:1">
+          <label style="font-size:12px;color:#555">规则标签（label）</label>
+          <input id="pf-label" type="text" placeholder="如：最低学历"
+            style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px">
         </div>
-        <div style="display:flex;gap:8px;margin-top:10px">
-          <button id="btn-jd-apply" class="btn btn-success" style="white-space:nowrap">✅ 将规则加入编辑器</button>
-          <button id="btn-jd-apply-prompt" class="btn" style="white-space:nowrap;display:none">📝 将软性说明追加到 Prompt</button>
+        <div style="flex:1">
+          <label style="font-size:12px;color:#555">字段（field）</label>
+          <select id="pf-field"
+            style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+            <option value="first_degree">第一学历</option>
+            <option value="total_work_years">工作年限（年）</option>
+            <option value="age">年龄</option>
+            <option value="major">所学专业</option>
+            <option value="certifications">证书与资质（AI识别）</option>
+            <option value="industry_tags">行业标签（AI识别）</option>
+          </select>
+        </div>
+        <div style="width:130px">
+          <label style="font-size:12px;color:#555">运算符（op）</label>
+          <select id="pf-op"
+            style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+            <option value="in">在列表中 (in)</option>
+            <option value="not_in">不在列表中 (not_in)</option>
+            <option value="gte">≥ (gte)</option>
+            <option value="lte">≤ (lte)</option>
+            <option value="gt">&gt; (gt)</option>
+            <option value="lt">&lt; (lt)</option>
+            <option value="eq">= (eq)</option>
+            <option value="contains_any">包含任意 (contains_any)</option>
+            <option value="regex">正则匹配 (regex)</option>
+          </select>
         </div>
       </div>
+      <div>
+        <label style="font-size:12px;color:#555">
+          值（value）
+          <span style="color:#888">── in/not_in/contains_any 请用逗号分隔多个值，数值类型直接填数字</span>
+        </label>
+        <input id="pf-value" type="text" placeholder="全日制本科,全日制硕士,全日制博士"
+          style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:#555">不通过说明（fail_reason）</label>
+        <input id="pf-fail-reason" type="text" placeholder="第一学历不满足全日制本科要求"
+          style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+      </div>
+      <button id="btn-add-prefilter" class="btn btn-primary" style="align-self:flex-start">添加规则</button>
     </div>
   </details>
 
-  <!-- ② 单条规则输入 -->
-  <div style="display:flex;gap:8px;margin-bottom:8px">
-    <input id="rule-nl-input" type="text" placeholder="描述一条规则，例如：年龄不超过40岁"
-           style="flex:1;padding:8px 12px;border:1px solid #ccc;border-radius:6px;font-size:13px">
-    <button id="btn-rule-nl" class="btn btn-primary" style="white-space:nowrap">🧠 AI 解析</button>
-    <button id="btn-rule-add" class="btn" style="white-space:nowrap">+ 手动添加</button>
-  </div>
-  <div id="rule-nl-status" style="font-size:12px;color:#888;margin-bottom:10px"></div>
-
-  <!-- ③ 规则列表 -->
+  <!-- 规则列表 -->
   <div id="rule-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
     <div style="color:#bbb;font-size:13px;text-align:center;padding:20px">加载中…</div>
   </div>
 
-  <!-- ④ 操作栏 -->
+  <!-- 操作栏 -->
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-    <button id="btn-rules-save" class="btn btn-primary">💾 保存规则</button>
-    <button id="btn-rules-preview" class="btn" style="background:#e8f5e9;border-color:#81c784;color:#2e7d32">🧪 测试规则（对现有候选人）</button>
+    <button id="btn-rules-save" class="btn btn-primary">💾 保存预筛规则</button>
+    <button id="btn-rules-preview" class="btn" style="background:#e8f5e9;border-color:#81c784;color:#2e7d32">
+      🧪 测试规则（对现有候选人）
+    </button>
     <span id="rules-save-status" style="font-size:12px;color:#888"></span>
   </div>
 
-  <!-- ⑤ 批量测试结果 -->
+  <!-- 批量测试结果 -->
   <div id="rules-preview-result" style="display:none;margin-top:14px;border:1px solid #c8e6c9;border-radius:8px;padding:12px;background:#f1f8e9"></div>
 </div>
+
+<!-- ══════════════ 全屏 Prompt 预览模态框 ══════════════ -->
+<div id="prompt-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;overflow:auto">
+  <div style="background:#fff;border-radius:10px;max-width:860px;margin:40px auto;padding:24px;position:relative">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h3 style="margin:0;font-size:16px">最终注入 AI 的完整 Prompt 预览</h3>
+      <button onclick="closeModal()" style="background:none;border:none;font-size:22px;cursor:pointer;color:#555">×</button>
+    </div>
+    <pre id="prompt-preview-content"
+      style="background:#f5f5f5;border:1px solid #ddd;border-radius:6px;padding:14px;font-size:12px;
+             white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow:auto;margin:0">
+      加载中…
+    </pre>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
-  const jobName = {{ job_name|tojson }};
-  const $ = id => document.getElementById(id);
+const jobName = {{ job_name|tojson }};
+const $ = id => document.getElementById(id);
 
-  $("btn-save").addEventListener("click", () => save(false));
+// ── 标签页 ───────────────────────────────────────────────────
+function switchTab(tab) {
+  $("panel-ai").style.display  = tab === "ai"  ? "" : "none";
+  $("panel-pre").style.display = tab === "pre" ? "" : "none";
+  $("tab-ai").style.background  = tab === "ai"  ? "#2980b9" : "#ecf0f1";
+  $("tab-ai").style.color       = tab === "ai"  ? "#fff"    : "#555";
+  $("tab-pre").style.background = tab === "pre" ? "#2980b9" : "#ecf0f1";
+  $("tab-pre").style.color      = tab === "pre" ? "#fff"    : "#555";
+}
 
-  async function save(force) {
-    const text = $("prompt-text").value;
-    const resp = await fetch("/api/prompt/save", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({job_name: jobName, prompt_text: text, force})
-    });
-    const data = await resp.json();
-    const out = $("save-result");
-    if (data.ok) {
-      out.innerHTML = `<p class="msg-success">✓ ${data.message}</p>`;
-      setTimeout(() => location.reload(), 1500);
-    } else if (data.needs_confirm) {
-      if (confirm(`⚠ ${data.message}\n\n是否仍要强制保存？`)) {
-        await save(true);
-      }
-    } else {
-      out.innerHTML = `<p class="error">✗ ${data.message}</p>`;
-    }
-  }
+// ── 工具函数 ─────────────────────────────────────────────────
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch]));
+}
 
-  $("btn-sandbox").addEventListener("click", async () => {
-    const text = $("prompt-text").value;
-    if (!text.trim()){ alert("Prompt 为空"); return; }
-    $("sandbox-result").innerHTML = `<div class="info-card">沙盒评估中… 5 份样本，约 30 秒</div>`;
-    try {
-      const r = await fetch("/api/prompt/test", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({job_name: jobName, prompt_text: text, sample_size: 5})
-      });
-      const d = await r.json();
-      renderSandbox(d);
-    } catch(e){
-      $("sandbox-result").innerHTML = `<div class="error">网络错误：${e.message}</div>`;
-    }
+// ══════════════════════════════════════════════════════════════
+// Tab 1: AI 评估配置
+// ══════════════════════════════════════════════════════════════
+
+// ── 保存上下文 ───────────────────────────────────────────────
+$("btn-save").addEventListener("click", () => saveContext(false));
+
+async function saveContext(force) {
+  const text = $("prompt-text").value;
+  const resp = await fetch("/api/prompt/save", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({job_name: jobName, prompt_text: text, force})
   });
-
-  function escapeHtml(s){
-    if (s == null) return "";
-    return String(s).replace(/[&<>"']/g, ch=>({
-      "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
-    }[ch]));
+  const d = await resp.json();
+  const out = $("save-result");
+  if (d.ok) {
+    out.innerHTML = `<p class="msg-success">✓ ${d.message}</p>`;
+    setTimeout(() => location.reload(), 1500);
+  } else if (d.needs_confirm) {
+    if (confirm(`⚠ ${d.message}\n\n是否仍要强制保存？`)) saveContext(true);
+  } else {
+    out.innerHTML = `<p class="error">✗ ${d.message}</p>`;
   }
+}
 
-  function renderSandbox(d){
-    if (!d.ok){
-      $("sandbox-result").innerHTML = `<div class="error">${escapeHtml(d.message||"失败")}</div>`;
-      return;
-    }
-    const results = d.results || [];
-    if (results.length === 0){
-      $("sandbox-result").innerHTML = `<div class="info-card">没有可用样本（请先正式评估几份简历）</div>`;
-      return;
-    }
-    let html = `<h3 class="section-title">沙盒结果（不写入数据库）</h3>`;
-    results.forEach(r => {
-      const matches = (r["符合"]||[]).map(m =>
-        `<li><b>${escapeHtml(m["条件"]||"")}</b>${m["条件"]&&m["证据"]?"：":""}<span class="evidence-text">${escapeHtml(m["证据"]||"")}</span></li>`
-      ).join("");
-      const mismatches = (r["不符合"]||[]).map(m =>
-        `<li><b>${escapeHtml(m["条件"]||"")}</b>${m["条件"]&&m["原因"]?"：":""}<span class="evidence-text">${escapeHtml(m["原因"]||"")}</span></li>`
-      ).join("");
-      html += `
-        <div class="card card-${r.verdict}">
-          <div class="card-head">
-            <span class="cand-name">${escapeHtml(r.name)}</span>
-            <span class="verdict-badge v-${r.verdict}">${escapeHtml(r.verdict)}</span>
-          </div>
-          ${matches ? `<div class="evidence pros"><div class="evidence-title">✅ 符合</div><ul>${matches}</ul></div>` : ""}
-          ${mismatches ? `<div class="evidence cons"><div class="evidence-title">❌ 不符合</div><ul>${mismatches}</ul></div>` : ""}
-          ${r.verdict_reason ? `<div class="verdict-reason-line">${escapeHtml(r.verdict_reason)}</div>` : ""}
-        </div>`;
-    });
-    $("sandbox-result").innerHTML = html;
+// ── 恢复出厂默认 ─────────────────────────────────────────────
+$("btn-restore-factory").addEventListener("click", async () => {
+  if (!confirm("确定恢复出厂默认 Prompt？当前内容会自动备份。")) return;
+  const resp = await fetch("/api/prompt/restore", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({job_name: jobName, timestamp: null})
+  });
+  const d = await resp.json();
+  if (d.ok) {
+    $("prompt-text").value = d.prompt_text;
+    alert("已恢复出厂默认。请检查后点「保存上下文」。");
+  } else {
+    alert("失败：" + d.message);
   }
+});
 
-  $("btn-restore-factory").addEventListener("click", async () => {
-    if (!confirm("确定要恢复到出厂默认 Prompt？当前 Prompt 会自动备份。")) return;
+// ── 版本回滚 ─────────────────────────────────────────────────
+document.querySelectorAll(".btn-restore-version").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const ts = btn.dataset.ts;
+    if (!confirm(`确定回滚到 ${ts} 版本？当前内容会备份。`)) return;
     const resp = await fetch("/api/prompt/restore", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({job_name: jobName, timestamp: null})
+      body: JSON.stringify({job_name: jobName, timestamp: ts})
     });
-    const data = await resp.json();
-    if (data.ok) {
-      $("prompt-text").value = data.prompt_text;
-      alert("已恢复出厂默认。请检查后保存。");
-      location.reload();
-    } else {
-      alert("失败：" + data.message);
-    }
+    const d = await resp.json();
+    if (d.ok) location.reload();
+    else alert("失败：" + d.message);
   });
+});
 
-  document.querySelectorAll(".btn-restore-version").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const ts = btn.dataset.ts;
-      if (!confirm(`确定回滚到 ${ts} 版本？当前 Prompt 会自动备份。`)) return;
-      const resp = await fetch("/api/prompt/restore", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({job_name: jobName, timestamp: ts})
-      });
-      const data = await resp.json();
-      if (data.ok) location.reload();
-      else alert("失败：" + data.message);
+// ── 全屏预览最终 Prompt ──────────────────────────────────────
+$("btn-preview-full").addEventListener("click", async () => {
+  $("prompt-modal").style.display = "";
+  $("prompt-preview-content").textContent = "加载中…";
+  try {
+    const r = await fetch(`/api/prompt/preview/${encodeURIComponent(jobName)}`);
+    const d = await r.json();
+    $("prompt-preview-content").textContent = d.ok ? d.preview : ("错误：" + d.message);
+  } catch(e) {
+    $("prompt-preview-content").textContent = "网络错误：" + e.message;
+  }
+});
+function closeModal() { $("prompt-modal").style.display = "none"; }
+$("prompt-modal").addEventListener("click", e => { if (e.target === $("prompt-modal")) closeModal(); });
+
+// ── 沙盒测试 ─────────────────────────────────────────────────
+$("btn-sandbox").addEventListener("click", async () => {
+  const text = $("prompt-text").value;
+  if (!text.trim()) { alert("Prompt 为空"); return; }
+  $("sandbox-result").innerHTML = `<div class="info-card">沙盒评估中… 5 份样本，约 30 秒</div>`;
+  try {
+    const r = await fetch("/api/prompt/test", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName, prompt_text: text, sample_size: 5})
     });
+    renderSandbox(await r.json());
+  } catch(e) {
+    $("sandbox-result").innerHTML = `<div class="error">网络错误：${e.message}</div>`;
+  }
+});
+
+function renderSandbox(d) {
+  if (!d.ok) {
+    $("sandbox-result").innerHTML = `<div class="error">${escapeHtml(d.message||"失败")}</div>`;
+    return;
+  }
+  const results = d.results || [];
+  if (!results.length) {
+    $("sandbox-result").innerHTML = `<div class="info-card">没有可用样本（请先正式评估几份简历）</div>`;
+    return;
+  }
+  let html = `<h3 class="section-title">沙盒结果（不写入数据库）</h3>`;
+  results.forEach(r => {
+    const matches = (r["符合"]||[]).map(m =>
+      `<li><b>${escapeHtml(m["条件"]||"")}</b>${m["条件"]&&m["证据"]?"：":""}<span class="evidence-text">${escapeHtml(m["证据"]||"")}</span></li>`
+    ).join("");
+    const mismatches = (r["不符合"]||[]).map(m =>
+      `<li><b>${escapeHtml(m["条件"]||"")}</b>${m["条件"]&&m["原因"]?"：":""}<span class="evidence-text">${escapeHtml(m["原因"]||"")}</span></li>`
+    ).join("");
+    html += `<div class="card card-${r.verdict}">
+      <div class="card-head">
+        <span class="cand-name">${escapeHtml(r.name)}</span>
+        <span class="verdict-badge v-${r.verdict}">${escapeHtml(r.verdict)}</span>
+      </div>
+      ${matches ? `<div class="evidence pros"><div class="evidence-title">✅ 符合</div><ul>${matches}</ul></div>` : ""}
+      ${mismatches ? `<div class="evidence cons"><div class="evidence-title">❌ 不符合</div><ul>${mismatches}</ul></div>` : ""}
+      ${r.verdict_reason ? `<div class="verdict-reason-line">${escapeHtml(r.verdict_reason)}</div>` : ""}
+    </div>`;
   });
+  $("sandbox-result").innerHTML = html;
+}
 
-  // ── 声明式规则引擎 ──────────────────────────────────────
-  let _rules = [];
-  let _generatedRules = [];
-  let _generatedPromptAdditions = "";
-  let _jdChecked = new Set();
+// ── AI 评判规则管理 ──────────────────────────────────────────
+let _evalRules = [];
 
-  function renderJdRuleCard(rule, i) {
-    const opLabel = OP_LABELS[rule.op] || rule.op;
-    const valStr = Array.isArray(rule.value) ? rule.value.join(", ") : String(rule.value ?? "");
-    return `<div data-jd-idx="${i}" style="border:1px solid #c8dff8;border-radius:8px;padding:10px 12px;background:#fff;font-size:13px;transition:opacity 0.18s">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <input type="checkbox" checked onchange="toggleJdRule(${i}, this.checked)"
-               style="width:16px;height:16px;cursor:pointer;accent-color:#2980b9;flex-shrink:0">
-        <span class="rule-label" style="font-weight:600;color:#2c3e50;flex:1;min-width:100px">${escapeHtml(rule.label||rule.id)}</span>
-        <span style="background:#fde8e8;color:#c0392b;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600">强制排除</span>
+const EVAL_TYPE_LABEL = {hard:"🔴 硬性", soft:"🟡 软性", bonus:"🟢 加分"};
+const EVAL_TYPE_COLOR = {
+  hard: {bg:"#fde8e8", color:"#c0392b"},
+  soft: {bg:"#fff9e6", color:"#b7770d"},
+  bonus:{bg:"#e8f5e9", color:"#27ae60"},
+};
+
+async function loadEvalRules() {
+  try {
+    const r = await fetch(`/api/rules/eval_list?job_name=${encodeURIComponent(jobName)}`);
+    const d = await r.json();
+    if (d.ok) { _evalRules = d.rules || []; renderEvalRules(); }
+  } catch(_) {}
+}
+
+function renderEvalRules() {
+  const container = $("eval-rule-list");
+  if (!_evalRules.length) {
+    container.innerHTML = '<div style="color:#bbb;font-size:13px;text-align:center;padding:16px">暂无规则，点击下方「新增评判规则」添加。</div>';
+    return;
+  }
+  container.innerHTML = _evalRules.map((rule, i) => renderEvalRuleCard(rule, i)).join("");
+}
+
+function renderEvalRuleCard(rule, i) {
+  const typeInfo = EVAL_TYPE_COLOR[rule.type] || EVAL_TYPE_COLOR.soft;
+  const typeLabel = EVAL_TYPE_LABEL[rule.type] || rule.type;
+  const hint = rule.evidence_hint ? `<div style="margin-top:4px;font-size:11px;color:#7f8c8d">
+    <b>证据标准：</b>${escapeHtml(rule.evidence_hint)}</div>` : "";
+  return `<div class="eval-rule-card" data-idx="${i}"
+    style="border:1px solid #e0e0e0;border-radius:8px;padding:10px 12px;background:#fafafa">
+    <!-- 展示模式 -->
+    <div class="eval-rule-view">
+      <div style="display:flex;align-items:flex-start;gap:8px">
+        <span style="background:${typeInfo.bg};color:${typeInfo.color};
+          font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;white-space:nowrap;flex-shrink:0;margin-top:1px">
+          ${typeLabel}
+        </span>
+        <div style="flex:1">
+          <div style="font-weight:600;color:#2c3e50;font-size:13px">${escapeHtml(rule.name)}</div>
+          <div style="color:#555;font-size:12px;margin-top:2px">${escapeHtml(rule.description)}</div>
+          ${hint}
+        </div>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button onclick="expandEvalEdit(${i})"
+            style="background:#e8f0fe;color:#1a73e8;border:1px solid #c5d5f8;
+                   border-radius:4px;padding:3px 10px;font-size:12px;cursor:pointer">编辑</button>
+          <button onclick="removeEvalRule(${i})"
+            style="background:none;border:none;color:#e74c3c;font-size:16px;cursor:pointer;padding:0 4px">×</button>
+        </div>
       </div>
-      <div style="color:#666;margin-top:5px;font-size:12px">
-        字段：${getFieldDisplay(rule.field)} ${opLabel} <code>${escapeHtml(valStr)}</code>
+    </div>
+    <!-- 编辑模式（默认隐藏） -->
+    <div class="eval-rule-edit" style="display:none;margin-top:10px;display:none;flex-direction:column;gap:6px">
+      <div style="display:flex;gap:8px">
+        <div style="flex:1">
+          <label style="font-size:11px;color:#555">名称</label>
+          <input class="er-name" type="text" value="${escapeHtml(rule.name)}"
+            style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+        </div>
+        <div style="width:120px">
+          <label style="font-size:11px;color:#555">类型</label>
+          <select class="er-type"
+            style="width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+            <option value="hard" ${rule.type==="hard"?"selected":""}>🔴 硬性</option>
+            <option value="soft" ${rule.type==="soft"?"selected":""}>🟡 软性</option>
+            <option value="bonus" ${rule.type==="bonus"?"selected":""}>🟢 加分</option>
+          </select>
+        </div>
       </div>
-      <div style="color:#888;font-size:11px;margin-top:3px">不通过提示：${escapeHtml(rule.fail_reason)}</div>
+      <div>
+        <label style="font-size:11px;color:#555">规则描述</label>
+        <textarea class="er-desc" rows="2"
+          style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px;resize:vertical">${escapeHtml(rule.description)}</textarea>
+      </div>
+      <div>
+        <label style="font-size:11px;color:#555">证据标准（evidence_hint）</label>
+        <input class="er-hint" type="text" value="${escapeHtml(rule.evidence_hint||"")}"
+          style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+      </div>
+      <div style="display:flex;gap:6px">
+        <button onclick="saveEvalEdit(${i})"
+          style="background:#2980b9;color:#fff;border:none;border-radius:4px;padding:5px 14px;font-size:13px;cursor:pointer">保存</button>
+        <button onclick="cancelEvalEdit(${i})"
+          style="background:#ecf0f1;color:#555;border:none;border-radius:4px;padding:5px 14px;font-size:13px;cursor:pointer">取消</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function expandEvalEdit(i) {
+  const card = document.querySelector(`.eval-rule-card[data-idx="${i}"]`);
+  if (!card) return;
+  card.querySelector(".eval-rule-view").style.display = "none";
+  card.querySelector(".eval-rule-edit").style.display = "flex";
+}
+
+function cancelEvalEdit(i) {
+  renderEvalRules();
+}
+
+function saveEvalEdit(i) {
+  const card = document.querySelector(`.eval-rule-card[data-idx="${i}"]`);
+  if (!card) return;
+  _evalRules[i] = {
+    name: card.querySelector(".er-name").value.trim(),
+    description: card.querySelector(".er-desc").value.trim(),
+    type: card.querySelector(".er-type").value,
+    evidence_hint: card.querySelector(".er-hint").value.trim(),
+  };
+  renderEvalRules();
+}
+
+function removeEvalRule(i) {
+  if (!confirm(`删除规则「${_evalRules[i].name}」？`)) return;
+  _evalRules.splice(i, 1);
+  renderEvalRules();
+}
+
+$("btn-add-eval-rule").addEventListener("click", () => {
+  const name = $("new-rule-name").value.trim();
+  const desc = $("new-rule-desc").value.trim();
+  if (!name || !desc) { alert("请填写规则名称和描述"); return; }
+  _evalRules.push({
+    name, description: desc,
+    type: $("new-rule-type").value,
+    evidence_hint: $("new-rule-hint").value.trim(),
+  });
+  $("new-rule-name").value = "";
+  $("new-rule-desc").value = "";
+  $("new-rule-hint").value = "";
+  $("add-eval-rule-form").open = false;
+  renderEvalRules();
+});
+
+$("btn-save-eval-rules").addEventListener("click", async () => {
+  const statusEl = $("eval-rules-status");
+  statusEl.textContent = "保存中…";
+  try {
+    const r = await fetch("/api/jobs/update_eval_rules", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName, rules: _evalRules})
+    });
+    const d = await r.json();
+    statusEl.textContent = d.ok ? "✓ " + d.message : "✗ " + d.message;
+  } catch(e) {
+    statusEl.textContent = "✗ 网络错误：" + e.message;
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// Tab 2: 预筛硬规则
+// ══════════════════════════════════════════════════════════════
+let _rules = [];
+let _generatedRules = [];
+let _generatedPromptAdditions = "";
+let _jdChecked = new Set();
+
+const OP_LABELS = {
+  lte:"≤", gte:"≥", lt:"<", gt:">", eq:"=", neq:"≠",
+  in:"在列表中", not_in:"不在列表中",
+  contains_any:"包含任意", contains_all:"包含全部",
+  regex:"正则匹配", truthy:"非空", falsy:"为空"
+};
+const FIELD_LABELS = {
+  age:"年龄", first_degree:"第一学历", total_work_years:"工作年限（年）",
+  major:"所学专业", certifications:"证书与资质", industry_tags:"行业标签",
+};
+const AI_INFERRED_FIELDS = new Set(["certifications", "industry_tags"]);
+
+function getFieldDisplay(field) {
+  const label = FIELD_LABELS[field] || field;
+  if (AI_INFERRED_FIELDS.has(field)) {
+    return `${escapeHtml(label)}&nbsp;<span title="AI 自动提炼，可能漏识别" style="cursor:help;color:#2980b9;font-size:13px">🤖</span><span style="font-size:10px;color:#7f8c8d;margin-left:2px">（AI识别）</span>`;
+  }
+  return escapeHtml(label);
+}
+
+async function loadRules() {
+  try {
+    const r = await fetch(`/api/rules/list?job_name=${encodeURIComponent(jobName)}`);
+    const d = await r.json();
+    if (d.ok) { _rules = d.rules || []; renderRules(); }
+  } catch(_) {}
+}
+
+function renderRuleCard(rule, i, isInlineEdit) {
+  const enabledChk = rule.enabled !== false ? "checked" : "";
+  const opLabel = OP_LABELS[rule.op] || rule.op;
+  const valStr = Array.isArray(rule.value) ? rule.value.join(", ") : String(rule.value ?? "");
+  if (isInlineEdit) {
+    const opOptions = Object.entries(OP_LABELS).map(([k, v]) =>
+      `<option value="${k}" ${k===rule.op?"selected":""}>${v} (${k})</option>`).join("");
+    const fieldOptions = Object.entries(FIELD_LABELS).map(([k, v]) =>
+      `<option value="${k}" ${k===rule.field?"selected":""}>${v}</option>`).join("");
+    return `<div class="rule-card prefilter-edit-card" data-idx="${i}"
+      style="border:1px solid #2980b9;border-radius:8px;padding:12px;background:#f0f7ff">
+      <div style="display:flex;flex-direction:column;gap:7px">
+        <div style="display:flex;gap:8px">
+          <div style="flex:1">
+            <label style="font-size:11px;color:#555">标签</label>
+            <input class="pfe-label" value="${escapeHtml(rule.label||rule.id)}"
+              style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+          </div>
+          <div style="flex:1">
+            <label style="font-size:11px;color:#555">字段</label>
+            <select class="pfe-field"
+              style="width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+              ${fieldOptions}
+            </select>
+          </div>
+          <div style="width:140px">
+            <label style="font-size:11px;color:#555">运算符</label>
+            <select class="pfe-op"
+              style="width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+              ${opOptions}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:#555">值</label>
+          <input class="pfe-value" value="${escapeHtml(valStr)}"
+            style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+        </div>
+        <div>
+          <label style="font-size:11px;color:#555">不通过说明</label>
+          <input class="pfe-fail" value="${escapeHtml(rule.fail_reason||"")}"
+            style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:4px;font-size:13px">
+        </div>
+        <div style="display:flex;gap:6px">
+          <button onclick="savePfEdit(${i})"
+            style="background:#2980b9;color:#fff;border:none;border-radius:4px;padding:5px 14px;font-size:13px;cursor:pointer">保存</button>
+          <button onclick="cancelPfEdit()"
+            style="background:#ecf0f1;color:#555;border:none;border-radius:4px;padding:5px 14px;font-size:13px;cursor:pointer">取消</button>
+        </div>
+      </div>
     </div>`;
   }
+  return `<div class="rule-card" data-idx="${i}"
+    style="border:1px solid #e0e0e0;border-radius:8px;padding:10px 12px;background:#fafafa;font-size:13px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <input type="checkbox" ${enabledChk} onchange="toggleRule(${i},this.checked)" title="启用/禁用">
+      <span style="font-weight:600;color:#2c3e50;flex:1;min-width:100px">${escapeHtml(rule.label||rule.id)}</span>
+      <span style="background:#fde8e8;color:#c0392b;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600">强制排除</span>
+      <button onclick="expandPfEdit(${i})"
+        style="background:#e8f0fe;color:#1a73e8;border:1px solid #c5d5f8;border-radius:4px;padding:3px 10px;font-size:12px;cursor:pointer">编辑</button>
+      <button onclick="removeRule(${i})"
+        style="background:none;border:none;color:#e74c3c;font-size:16px;cursor:pointer;padding:0 4px">×</button>
+    </div>
+    <div style="color:#666;margin-top:5px;font-size:12px">
+      字段：${getFieldDisplay(rule.field)} ${opLabel} <code>${escapeHtml(valStr)}</code>
+    </div>
+    <div style="color:#888;font-size:11px;margin-top:3px">不通过提示：${escapeHtml(rule.fail_reason)}</div>
+  </div>`;
+}
 
-  function toggleJdRule(i, checked) {
-    if (checked) _jdChecked.add(i);
-    else _jdChecked.delete(i);
-    const card = document.querySelector(`#jd-rules-preview [data-jd-idx="${i}"]`);
-    if (card) {
-      card.style.opacity = checked ? "1" : "0.4";
-      const labelEl = card.querySelector(".rule-label");
-      if (labelEl) labelEl.style.textDecoration = checked ? "none" : "line-through";
-    }
-    updateJdApplyBtn();
+let _pfEditIdx = -1;
+
+function renderRules() {
+  const container = $("rule-list");
+  if (!_rules.length) {
+    container.innerHTML = '<div style="color:#bbb;font-size:13px;text-align:center;padding:20px">暂无规则。</div>';
+    return;
   }
+  container.innerHTML = _rules.map((rule, i) => renderRuleCard(rule, i, i === _pfEditIdx)).join("");
+}
 
-  function toggleAllJd(checked) {
-    const total = _generatedRules.length;
-    if (checked) { for (let i = 0; i < total; i++) _jdChecked.add(i); }
-    else { _jdChecked.clear(); }
-    for (let i = 0; i < total; i++) {
-      const card = document.querySelector(`#jd-rules-preview [data-jd-idx="${i}"]`);
-      if (card) {
-        const chk = card.querySelector('input[type="checkbox"]');
-        if (chk) chk.checked = checked;
-        card.style.opacity = checked ? "1" : "0.4";
-        const labelEl = card.querySelector(".rule-label");
-        if (labelEl) labelEl.style.textDecoration = checked ? "none" : "line-through";
-      }
-    }
-    updateJdApplyBtn();
+function expandPfEdit(i) {
+  _pfEditIdx = i;
+  renderRules();
+  const card = document.querySelector(`.prefilter-edit-card[data-idx="${i}"]`);
+  if (card) card.scrollIntoView({behavior:"smooth", block:"nearest"});
+}
+
+function cancelPfEdit() {
+  _pfEditIdx = -1;
+  renderRules();
+}
+
+function savePfEdit(i) {
+  const card = document.querySelector(`.prefilter-edit-card[data-idx="${i}"]`);
+  if (!card) return;
+  const rawVal = card.querySelector(".pfe-value").value.trim();
+  const op = card.querySelector(".pfe-op").value;
+  let parsedVal = rawVal;
+  if (["in","not_in","contains_any","contains_all"].includes(op)) {
+    parsedVal = rawVal.split(",").map(s => s.trim()).filter(Boolean);
+  } else if (["gte","lte","gt","lt","eq","neq"].includes(op) && !isNaN(Number(rawVal))) {
+    parsedVal = Number(rawVal);
   }
+  _rules[i] = {
+    ..._rules[i],
+    label: card.querySelector(".pfe-label").value.trim(),
+    field: card.querySelector(".pfe-field").value,
+    op,
+    value: parsedVal,
+    fail_reason: card.querySelector(".pfe-fail").value.trim(),
+  };
+  _pfEditIdx = -1;
+  renderRules();
+}
 
-  function updateJdApplyBtn() {
-    const btn = $("btn-jd-apply");
-    const n = _jdChecked.size;
-    const total = _generatedRules.length;
-    if (n === 0) {
-      btn.disabled = true;
-      btn.textContent = "⛔ 未选择任何规则";
-      btn.style.opacity = "0.5";
-      btn.style.cursor = "not-allowed";
+function toggleRule(i, enabled) { _rules[i].enabled = enabled; }
+function removeRule(i) { _rules.splice(i, 1); _pfEditIdx = -1; renderRules(); }
+
+// 手动添加预筛规则
+$("btn-add-prefilter").addEventListener("click", () => {
+  const label = $("pf-label").value.trim();
+  const field = $("pf-field").value;
+  const op    = $("pf-op").value;
+  const rawVal = $("pf-value").value.trim();
+  const failReason = $("pf-fail-reason").value.trim();
+  if (!label || !rawVal) { alert("请填写标签和值"); return; }
+  let parsedVal = rawVal;
+  if (["in","not_in","contains_any","contains_all"].includes(op)) {
+    parsedVal = rawVal.split(",").map(s => s.trim()).filter(Boolean);
+  } else if (["gte","lte","gt","lt","eq","neq"].includes(op) && !isNaN(Number(rawVal))) {
+    parsedVal = Number(rawVal);
+  }
+  _rules.push({
+    id: "rule_" + Date.now(),
+    label, field, op, value: parsedVal,
+    fail_reason: failReason || `${label}不满足要求`,
+    type: "hard", enabled: true,
+  });
+  $("pf-label").value = "";
+  $("pf-value").value = "";
+  $("pf-fail-reason").value = "";
+  $("add-prefilter-form").open = false;
+  renderRules();
+});
+
+$("btn-rules-save").addEventListener("click", async () => {
+  const statusEl = $("rules-save-status");
+  statusEl.textContent = "保存中…";
+  try {
+    const r = await fetch("/api/rules/save", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName, rules: _rules})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      statusEl.textContent = "✓ " + d.message;
+      if (d.prefilter_count > 0) promptPrefilterClear(d.prefilter_count);
     } else {
-      btn.disabled = false;
-      btn.textContent = `✅ 将选中 ${n}/${total} 条加入编辑器`;
-      btn.style.opacity = "1";
-      btn.style.cursor = "pointer";
+      statusEl.textContent = "✗ " + d.message;
     }
+  } catch(e) {
+    statusEl.textContent = "✗ 网络错误：" + e.message;
   }
+});
 
-  const OP_LABELS = {
-    lte:"≤", gte:"≥", lt:"<", gt:">", eq:"=", neq:"≠",
-    in:"在列表中", not_in:"不在列表中",
-    contains_any:"包含任意", contains_all:"包含全部",
-    regex:"正则匹配", truthy:"非空", falsy:"为空"
-  };
-
-  const FIELD_LABELS = {
-    age: "年龄",
-    first_degree: "第一学历",
-    total_work_years: "工作年限（年）",
-    major: "所学专业",
-    certifications: "证书与资质",
-    industry_tags: "行业标签",
-  };
-  const AI_INFERRED_FIELDS = new Set(["certifications", "industry_tags"]);
-
-  function getFieldDisplay(field) {
-    const label = FIELD_LABELS[field] || field;
-    if (AI_INFERRED_FIELDS.has(field)) {
-      return `${escapeHtml(label)}&nbsp;<span title="AI 在处理简历时从工作经历自动提炼的关键词，可能因简历描述不清而漏识别——适合做参考条件，作为硬性排除需谨慎" style="cursor:help;color:#2980b9;font-size:13px">🤖</span><span style="font-size:10px;color:#7f8c8d;margin-left:2px">（AI识别）</span>`;
+async function promptPrefilterClear(count) {
+  if (!confirm(`当前有 ${count} 条历史预筛拒绝记录。\n点「确定」清除（让新规则重新判断），点「取消」仅保存规则。`)) return;
+  const wantReeval = confirm(`是否立即启动 AI 重新评估这 ${count} 份简历？`);
+  try {
+    const r = await fetch("/api/rules/clear_prefilter_rejects", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName, reeval: wantReeval})
+    });
+    const d = await r.json();
+    if (d.ok && d.reeval_started) {
+      alert("✓ " + d.message + "\n即将跳转到抓取页面。");
+      window.location.href = "/scrape/" + encodeURIComponent(jobName);
+    } else if (d.ok) {
+      alert("✓ " + d.message);
+    } else {
+      alert("✗ " + d.message);
     }
-    return escapeHtml(label);
+  } catch(e) {
+    alert("✗ 网络错误：" + e.message);
   }
+}
 
-  function hasAiInferredFields(rules) {
-    return rules.some(r => AI_INFERRED_FIELDS.has(r.field));
-  }
-
-  async function loadRules() {
-    try {
-      const r = await fetch(`/api/rules/list?job_name=${encodeURIComponent(jobName)}`);
-      const d = await r.json();
-      if (d.ok) { _rules = d.rules || []; renderRules(); }
-    } catch(_) {}
-  }
-
-  function renderRuleCard(rule, i, opts = {}) {
-    const enabledChk = rule.enabled !== false ? "checked" : "";
-    const opLabel = OP_LABELS[rule.op] || rule.op;
-    const valStr = Array.isArray(rule.value) ? rule.value.join(", ") : String(rule.value ?? "");
-    const removeBtn = opts.removeHandler
-      ? `<button onclick="${opts.removeHandler}(${i})" style="background:none;border:none;color:#e74c3c;font-size:16px;cursor:pointer;padding:0 4px" title="删除">×</button>`
-      : "";
-    const toggleAttr = opts.toggleHandler
-      ? `onchange="${opts.toggleHandler}(${i}, this.checked)"`
-      : "";
-    return `<div class="rule-card" data-idx="${i}" style="border:1px solid #e0e0e0;border-radius:8px;padding:10px 12px;background:#fafafa;font-size:13px">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        ${opts.showCheckbox !== false ? `<input type="checkbox" ${enabledChk} ${toggleAttr} title="启用/禁用">` : ""}
-        <span style="font-weight:600;color:#2c3e50;flex:1;min-width:100px">${escapeHtml(rule.label||rule.id)}</span>
-        <span style="background:#fde8e8;color:#c0392b;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600">强制排除</span>
-        ${removeBtn}
-      </div>
-      <div style="color:#666;margin-top:5px;font-size:12px">
-        字段：${getFieldDisplay(rule.field)} ${opLabel} <code>${escapeHtml(valStr)}</code>
-      </div>
-      <div style="color:#888;font-size:11px;margin-top:3px">不通过提示：${escapeHtml(rule.fail_reason)}</div>
-    </div>`;
-  }
-
-  function renderRules() {
-    const container = $("rule-list");
-    if (_rules.length === 0) {
-      container.innerHTML = '<div style="color:#bbb;font-size:13px;text-align:center;padding:20px">暂无规则，点击「+ 手动添加」或用 AI 解析创建。</div>';
+$("btn-rules-preview").addEventListener("click", async () => {
+  const resultEl = $("rules-preview-result");
+  resultEl.style.display = "block";
+  resultEl.innerHTML = '<div style="color:#888;font-size:13px">🧪 测试中，请稍候…</div>';
+  $("btn-rules-preview").disabled = true;
+  try {
+    const r = await fetch("/api/rules/preview", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName, rules: _rules})
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      resultEl.innerHTML = `<div style="color:#c0392b">✗ ${escapeHtml(d.message||"失败")}</div>`;
       return;
     }
-    container.innerHTML = _rules.map((rule, i) =>
-      renderRuleCard(rule, i, {removeHandler: "removeRule", toggleHandler: "toggleRule", showCheckbox: true})
-    ).join("");
+    const {total, pass_count, fail_count, fails} = d;
+    let html = `<div style="font-weight:600;font-size:13px;margin-bottom:8px">
+      测试结果：共 ${total} 名 ｜ <span style="color:#2e7d32">✅ 通过 ${pass_count}</span> ｜ <span style="color:#c0392b">❌ 排除 ${fail_count}</span>
+    </div>`;
+    if (fails && fails.length) {
+      html += `<div style="font-size:12px;color:#555;margin-bottom:6px">以下候选人将被排除（当前规则下）：</div>`;
+      html += fails.map(f => `<div style="border:1px solid #ef9a9a;border-radius:6px;padding:7px 10px;background:#fff;margin-bottom:5px;font-size:12px">
+        <span style="font-weight:600;color:#2c3e50">${escapeHtml(f.name)}</span>
+        <span style="color:#999;margin-left:6px">ID ${f.resume_id}</span>
+        <div style="color:#c0392b;margin-top:3px">${f.reasons.map(r=>escapeHtml(r)).join("；")}</div>
+      </div>`).join("");
+    } else if (fail_count === 0 && total > 0) {
+      html += `<div style="color:#2e7d32;font-size:12px">所有现有候选人均可通过当前规则。</div>`;
+    }
+    resultEl.innerHTML = html;
+  } catch(e) {
+    resultEl.innerHTML = `<div style="color:#c0392b">✗ 网络错误：${escapeHtml(e.message)}</div>`;
+  } finally {
+    $("btn-rules-preview").disabled = false;
   }
+});
 
-  function toggleRule(i, enabled) {
-    _rules[i].enabled = enabled;
+// ── JD 生成规则 ──────────────────────────────────────────────
+function renderJdRuleCard(rule, i) {
+  const opLabel = OP_LABELS[rule.op] || rule.op;
+  const valStr = Array.isArray(rule.value) ? rule.value.join(", ") : String(rule.value ?? "");
+  return `<div data-jd-idx="${i}" style="border:1px solid #c8dff8;border-radius:8px;padding:10px 12px;background:#fff;font-size:13px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <input type="checkbox" checked onchange="toggleJdRule(${i},this.checked)" style="width:16px;height:16px;cursor:pointer;accent-color:#2980b9">
+      <span class="rule-label" style="font-weight:600;color:#2c3e50;flex:1">${escapeHtml(rule.label||rule.id)}</span>
+      <span style="background:#fde8e8;color:#c0392b;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600">强制排除</span>
+    </div>
+    <div style="color:#666;margin-top:5px;font-size:12px">字段：${getFieldDisplay(rule.field)} ${opLabel} <code>${escapeHtml(valStr)}</code></div>
+    <div style="color:#888;font-size:11px;margin-top:3px">不通过提示：${escapeHtml(rule.fail_reason)}</div>
+  </div>`;
+}
+
+function toggleJdRule(i, checked) {
+  if (checked) _jdChecked.add(i); else _jdChecked.delete(i);
+  const card = document.querySelector(`#jd-rules-preview [data-jd-idx="${i}"]`);
+  if (card) {
+    card.style.opacity = checked ? "1" : "0.4";
+    const lbl = card.querySelector(".rule-label");
+    if (lbl) lbl.style.textDecoration = checked ? "none" : "line-through";
   }
+  updateJdApplyBtn();
+}
 
-  function removeRule(i) {
-    _rules.splice(i, 1);
-    renderRules();
+function toggleAllJd(checked) {
+  for (let i = 0; i < _generatedRules.length; i++) {
+    if (checked) _jdChecked.add(i); else _jdChecked.delete(i);
+    const card = document.querySelector(`#jd-rules-preview [data-jd-idx="${i}"]`);
+    if (card) {
+      const chk = card.querySelector('input[type="checkbox"]');
+      if (chk) chk.checked = checked;
+      card.style.opacity = checked ? "1" : "0.4";
+      const lbl = card.querySelector(".rule-label");
+      if (lbl) lbl.style.textDecoration = checked ? "none" : "line-through";
+    }
   }
+  updateJdApplyBtn();
+}
 
-  function addBlankRule() {
-    _rules.push({
-      id: "rule_" + Date.now(),
-      label: "新规则",
-      field: "first_degree",
-      op: "in",
-      value: ["全日制本科", "全日制硕士", "全日制博士"],
-      fail_reason: "学历不满足要求",
-      type: "hard",
-      enabled: true,
+function updateJdApplyBtn() {
+  const btn = $("btn-jd-apply");
+  const n = _jdChecked.size;
+  const total = _generatedRules.length;
+  if (n === 0) {
+    btn.disabled = true; btn.textContent = "⛔ 未选择任何规则";
+    btn.style.opacity = "0.5"; btn.style.cursor = "not-allowed";
+  } else {
+    btn.disabled = false; btn.textContent = `✅ 将选中 ${n}/${total} 条加入编辑器`;
+    btn.style.opacity = "1"; btn.style.cursor = "pointer";
+  }
+}
+
+function hasAiInferredFields(rules) { return rules.some(r => AI_INFERRED_FIELDS.has(r.field)); }
+
+$("btn-jd-generate").addEventListener("click", async () => {
+  const jdText = $("jd-input").value.trim();
+  if (!jdText) { alert("请先粘贴 JD 或描述招聘要求"); return; }
+  const statusEl = $("jd-status");
+  statusEl.textContent = "🧠 AI 解析中…";
+  $("jd-preview").style.display = "none";
+  $("btn-jd-generate").disabled = true;
+  try {
+    const r = await fetch("/api/rules/generate_from_jd", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({job_name: jobName, jd_text: jdText})
     });
-    renderRules();
-  }
+    const d = await r.json();
+    if (!d.ok) { statusEl.textContent = "✗ " + (d.message || "生成失败"); return; }
+    _generatedRules = d.rules || [];
+    _generatedPromptAdditions = d.prompt_additions || "";
+    const skipped = d.skipped || [];
+    statusEl.textContent = `✓ 生成 ${_generatedRules.length} 条硬规则` +
+      (skipped.length ? `，已过滤 ${skipped.length} 条：${skipped.join("、")}` : "");
 
-  $("btn-rule-add").addEventListener("click", addBlankRule);
-
-  $("btn-rule-nl").addEventListener("click", async () => {
-    const text = $("rule-nl-input").value.trim();
-    if (!text) { alert("请先输入规则描述"); return; }
-    const statusEl = $("rule-nl-status");
-    statusEl.textContent = "🧠 AI 解析中…";
-    try {
-      const r = await fetch("/api/rules/parse_nl", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({job_name: jobName, nl_text: text})
-      });
-      const d = await r.json();
-      if (d.ok && d.rule) {
-        _rules.push(d.rule);
-        renderRules();
-        $("rule-nl-input").value = "";
-        statusEl.textContent = `✓ 解析成功：${d.rule.label || d.rule.id}`;
-      } else {
-        statusEl.textContent = "✗ 解析失败：" + (d.message || "未知错误");
-      }
-    } catch(e) {
-      statusEl.textContent = "✗ 网络错误：" + e.message;
-    }
-  });
-
-  $("btn-rules-save").addEventListener("click", async () => {
-    const statusEl = $("rules-save-status");
-    statusEl.textContent = "保存中…";
-    try {
-      const r = await fetch("/api/rules/save", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({job_name: jobName, rules: _rules})
-      });
-      const d = await r.json();
-      if (d.ok) {
-        statusEl.textContent = "✓ " + d.message;
-        if (d.prefilter_count > 0) {
-          await promptPrefilterClear(d.prefilter_count);
-        }
-      } else {
-        statusEl.textContent = "✗ " + d.message;
-      }
-    } catch(e) {
-      statusEl.textContent = "✗ 网络错误：" + e.message;
-    }
-  });
-
-  async function promptPrefilterClear(count) {
-    const wantClear = confirm(
-      `当前有 ${count} 条历史预筛拒绝记录。\n` +
-      `您刚才修改了规则，这些人不会自动重新评估。\n\n` +
-      `点「确定」清除历史记录（让新规则重新判断）\n` +
-      `点「取消」仅保存规则，历史拒绝记录保持不变`
-    );
-    if (!wantClear) return;
-    const wantReeval = confirm(
-      `是否立即启动 AI 重新评估这 ${count} 份简历？\n\n` +
-      `点「确定」立即评估（跳转到抓取页面查看进度）\n` +
-      `点「取消」仅清除记录，下次手动触发评估`
-    );
-    try {
-      const r = await fetch("/api/rules/clear_prefilter_rejects", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({job_name: jobName, reeval: wantReeval})
-      });
-      const d = await r.json();
-      if (d.ok) {
-        if (d.reeval_started) {
-          alert("✓ " + d.message + "\n即将跳转到抓取页面查看进度。");
-          window.location.href = "/scrape/" + encodeURIComponent(jobName);
-        } else {
-          alert("✓ " + d.message);
-        }
-      } else {
-        alert("✗ 清除失败：" + d.message);
-      }
-    } catch(e) {
-      alert("✗ 网络错误：" + e.message);
-    }
-  }
-
-  // ── 从 JD 生成规则 ──────────────────────────────────────
-  $("btn-jd-generate").addEventListener("click", async () => {
-    const jdText = $("jd-input").value.trim();
-    if (!jdText) { alert("请先粘贴 JD 或描述招聘要求"); return; }
-    const statusEl = $("jd-status");
-    statusEl.textContent = "🧠 AI 解析中…";
-    $("jd-preview").style.display = "none";
-    $("btn-jd-generate").disabled = true;
-    try {
-      const r = await fetch("/api/rules/generate_from_jd", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({job_name: jobName, jd_text: jdText})
-      });
-      const d = await r.json();
-      if (!d.ok) { statusEl.textContent = "✗ " + (d.message || "生成失败"); return; }
-      _generatedRules = d.rules || [];
-      _generatedPromptAdditions = d.prompt_additions || "";
-      const skipped = d.skipped || [];
-      let statusMsg = `✓ 生成 ${_generatedRules.length} 条硬规则`;
-      if (skipped.length > 0) statusMsg += `，已过滤 ${skipped.length} 条无效规则：${skipped.join("、")}`;
-      statusEl.textContent = statusMsg;
-
-      // 渲染硬规则预览
-      _jdChecked = new Set(_generatedRules.map((_, i) => i));
-      const rulesPreview = $("jd-rules-preview");
-      if (_generatedRules.length > 0) {
-        const n = _generatedRules.length;
-        const hasAi = hasAiInferredFields(_generatedRules);
-        let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div style="font-weight:600;font-size:13px;color:#1a5276">生成的硬规则预览（${n} 条，默认全选）：</div>
-          ${n >= 2 ? `<div style="font-size:12px">
-            <a href="#" onclick="toggleAllJd(true);return false" style="color:#2980b9;text-decoration:none">全选</a>
-            <span style="color:#ccc;margin:0 4px">/</span>
-            <a href="#" onclick="toggleAllJd(false);return false" style="color:#7f8c8d;text-decoration:none">全不选</a>
-          </div>` : ""}
-        </div>`;
-        if (hasAi) {
-          html += `<div style="background:#fff8e1;border:1px solid #f0c040;border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#7d6608">
-            ⚠️ 含 <b>🤖 AI识别字段</b>（行业标签 / 证书），由 AI 从简历工作经历自动提炼，可能因描述不清漏识别。建议作为参考软条件，不建议强制排除。
-          </div>`;
-        }
-        html += _generatedRules.map((rule, i) => renderJdRuleCard(rule, i)).join("");
-        rulesPreview.innerHTML = html;
-        updateJdApplyBtn();
-      } else {
-        rulesPreview.innerHTML = '<div style="color:#bbb;font-size:12px;padding:8px 0">未提取到可量化的硬规则</div>';
-        updateJdApplyBtn();
-      }
-
-      // 渲染 Prompt 建议
-      const promptWrap = $("jd-prompt-preview-wrap");
-      const applyPromptBtn = $("btn-jd-apply-prompt");
-      if (_generatedPromptAdditions) {
-        $("jd-prompt-preview").textContent = _generatedPromptAdditions;
-        promptWrap.style.display = "block";
-        applyPromptBtn.style.display = "inline-block";
-      } else {
-        promptWrap.style.display = "none";
-        applyPromptBtn.style.display = "none";
-      }
-
-      $("jd-preview").style.display = "block";
-    } catch(e) {
-      statusEl.textContent = "✗ 网络错误：" + e.message;
-    } finally {
-      $("btn-jd-generate").disabled = false;
-    }
-  });
-
-  $("btn-jd-apply").addEventListener("click", () => {
-    const selected = _generatedRules.filter((_, i) => _jdChecked.has(i));
-    if (selected.length === 0) { alert("请先勾选至少一条规则"); return; }
-    const existingIds = new Set(_rules.map(r => r.id));
-    let added = 0, skipped = 0;
-    selected.forEach(rule => {
-      if (!existingIds.has(rule.id)) { _rules.push(rule); added++; }
-      else skipped++;
-    });
-    renderRules();
-    $("jd-section").open = false;
-    if (skipped > 0) {
-      alert(`已选 ${selected.length} 条，其中 ${skipped} 条已存在跳过，实际加入 ${added} 条。\n记得点「💾 保存规则」生效。`);
-    } else {
-      alert(`已将 ${added} 条规则加入编辑器。记得点「💾 保存规则」生效。`);
-    }
-  });
-
-  $("btn-jd-apply-prompt").addEventListener("click", () => {
-    if (!_generatedPromptAdditions) return;
-    const ta = $("prompt-text");
-    const sep = ta.value.trim() ? "\n\n" : "";
-    ta.value = ta.value.trimEnd() + sep + _generatedPromptAdditions;
-    alert("已追加到 Prompt。记得点「💾 保存」生效。");
-  });
-
-  // ── 批量测试规则 ──────────────────────────────────────
-  $("btn-rules-preview").addEventListener("click", async () => {
-    const resultEl = $("rules-preview-result");
-    resultEl.style.display = "block";
-    resultEl.innerHTML = '<div style="color:#888;font-size:13px">🧪 测试中，请稍候…</div>';
-    $("btn-rules-preview").disabled = true;
-    try {
-      const r = await fetch("/api/rules/preview", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({job_name: jobName, rules: _rules})
-      });
-      const d = await r.json();
-      if (!d.ok) {
-        resultEl.innerHTML = `<div style="color:#c0392b">✗ ${escapeHtml(d.message||"测试失败")}</div>`;
-        return;
-      }
-      const {total, pass_count, fail_count, fails} = d;
-      let html = `<div style="font-weight:600;font-size:13px;margin-bottom:8px">
-        测试结果：共 ${total} 名候选人 ｜ <span style="color:#2e7d32">✅ 通过 ${pass_count}</span> ｜ <span style="color:#c0392b">❌ 排除 ${fail_count}</span>
+    _jdChecked = new Set(_generatedRules.map((_,i) => i));
+    const rulesPreview = $("jd-rules-preview");
+    if (_generatedRules.length > 0) {
+      const n = _generatedRules.length;
+      const hasAi = hasAiInferredFields(_generatedRules);
+      let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-weight:600;font-size:13px;color:#1a5276">生成的硬规则预览（${n} 条）：</div>
+        ${n >= 2 ? `<div style="font-size:12px">
+          <a href="#" onclick="toggleAllJd(true);return false" style="color:#2980b9;text-decoration:none">全选</a>
+          <span style="color:#ccc;margin:0 4px">/</span>
+          <a href="#" onclick="toggleAllJd(false);return false" style="color:#7f8c8d;text-decoration:none">全不选</a>
+        </div>` : ""}
       </div>`;
-      if (fails && fails.length > 0) {
-        html += `<div style="font-size:12px;color:#555;margin-bottom:6px">以下候选人将被排除（当前规则下）：</div>`;
-        html += fails.map(f => `
-          <div style="border:1px solid #ef9a9a;border-radius:6px;padding:7px 10px;background:#fff;margin-bottom:5px;font-size:12px">
-            <span style="font-weight:600;color:#2c3e50">${escapeHtml(f.name)}</span>
-            <span style="color:#999;margin-left:6px">ID ${f.resume_id}</span>
-            <div style="color:#c0392b;margin-top:3px">${f.reasons.map(r => escapeHtml(r)).join("；")}</div>
-          </div>`).join("");
-      } else if (fail_count === 0 && total > 0) {
-        html += `<div style="color:#2e7d32;font-size:12px">所有现有候选人均可通过当前规则。</div>`;
+      if (hasAi) {
+        html += `<div style="background:#fff8e1;border:1px solid #f0c040;border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:12px;color:#7d6608">
+          ⚠️ 含 <b>🤖 AI识别字段</b>，可能因简历描述不清漏识别，建议作为参考软条件。
+        </div>`;
       }
-      resultEl.innerHTML = html;
-    } catch(e) {
-      resultEl.innerHTML = `<div style="color:#c0392b">✗ 网络错误：${escapeHtml(e.message)}</div>`;
-    } finally {
-      $("btn-rules-preview").disabled = false;
+      html += _generatedRules.map((rule, i) => renderJdRuleCard(rule, i)).join("");
+      rulesPreview.innerHTML = html;
+      updateJdApplyBtn();
+    } else {
+      rulesPreview.innerHTML = '<div style="color:#bbb;font-size:12px;padding:8px 0">未提取到可量化的硬规则</div>';
+      updateJdApplyBtn();
     }
-  });
 
-  loadRules();
+    const promptWrap = $("jd-prompt-preview-wrap");
+    const applyBtn = $("btn-jd-apply-prompt");
+    if (_generatedPromptAdditions) {
+      $("jd-prompt-preview").textContent = _generatedPromptAdditions;
+      promptWrap.style.display = "block";
+      applyBtn.style.display = "inline-block";
+    } else {
+      promptWrap.style.display = "none";
+      applyBtn.style.display = "none";
+    }
+    $("jd-preview").style.display = "block";
+  } catch(e) {
+    $("jd-status").textContent = "✗ 网络错误：" + e.message;
+  } finally {
+    $("btn-jd-generate").disabled = false;
+  }
+});
+
+$("btn-jd-apply").addEventListener("click", () => {
+  const selected = _generatedRules.filter((_,i) => _jdChecked.has(i));
+  if (!selected.length) { alert("请先勾选至少一条规则"); return; }
+  const existingIds = new Set(_rules.map(r => r.id));
+  let added = 0, skipped = 0;
+  selected.forEach(rule => {
+    if (!existingIds.has(rule.id)) { _rules.push(rule); added++; }
+    else skipped++;
+  });
+  renderRules();
+  if (skipped > 0) alert(`已加入 ${added} 条，${skipped} 条已存在跳过。记得点「💾 保存预筛规则」。`);
+  else alert(`已将 ${added} 条规则加入编辑器。记得点「💾 保存预筛规则」。`);
+});
+
+$("btn-jd-apply-prompt").addEventListener("click", () => {
+  if (!_generatedPromptAdditions) return;
+  const ta = $("prompt-text");
+  ta.value = ta.value.trimEnd() + "\n\n" + _generatedPromptAdditions;
+  switchTab("ai");
+  alert("已追加到上下文 Prompt。记得点「💾 保存上下文」。");
+});
+
+// ── 初始化 ────────────────────────────────────────────────────
+loadEvalRules();
+loadRules();
 </script>
 {% endblock %}

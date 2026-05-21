@@ -79,6 +79,26 @@ def port_open(port, timeout=0.5):
         return False
 
 
+def kill_port(port):
+    """终止占用指定端口的进程（Windows）。返回是否成功找到并发送终止信号。"""
+    killed = False
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=5)
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.split()
+                if parts:
+                    pid = parts[-1]
+                    subprocess.run(
+                        ["taskkill", "/PID", pid, "/F", "/T"],
+                        capture_output=True, timeout=5)
+                    killed = True
+    except Exception:
+        pass
+    return killed
+
+
 def init_jobs_if_empty():
     """如果数据库里还没有岗位，初始化13个默认岗位"""
     sys.path.insert(0, ROOT)
@@ -130,11 +150,19 @@ def main():
     check_env_file()
     init_jobs_if_empty()
 
-    # 启动 Flask
+    # 启动 Flask（若有旧进程则先杀掉）
     if port_open(PORT):
-        print(f"端口 {PORT} 已被占用，可能服务已在运行。直接打开浏览器...")
-        webbrowser.open(URL)
-        return
+        print(f"检测到端口 {PORT} 有旧进程，正在终止...")
+        kill_port(PORT)
+        for _ in range(8):          # 最多等 4 秒让端口释放
+            time.sleep(0.5)
+            if not port_open(PORT):
+                break
+        else:
+            print(f"⚠ 端口 {PORT} 仍被占用，无法启动。请手动关闭占用程序后重试。")
+            input("按回车退出...")
+            return
+        print("✓ 旧进程已终止，正在重启...")
 
     print(f"启动 Web 服务于 {URL}")
     proc = subprocess.Popen(

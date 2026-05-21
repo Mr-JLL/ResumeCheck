@@ -9,6 +9,7 @@ import sys
 import io
 import json
 import glob
+import html
 import shutil
 import base64
 import hashlib
@@ -19,6 +20,8 @@ import random
 import collections
 import subprocess
 import concurrent.futures
+import re
+import zipfile
 
 from flask import (Flask, render_template, request, jsonify,
                    redirect, url_for, send_file, Response)
@@ -30,6 +33,7 @@ import extractor
 import worker
 from utils import get_lan_ip
 import jd_parser
+import judger
 import learning
 import llm_utils
 import init_jobs
@@ -40,6 +44,16 @@ try:
     HAS_FILE_PARSER = True
 except ImportError:
     HAS_FILE_PARSER = False
+
+# PyMuPDF >= 1.24 删除了 Rect.get_area()，但 pdf2docx 0.5.x 仍然调用它。
+# 在此补回该方法，使两个库可以共存而无需降级任何包。
+try:
+    import fitz as _fitz_patch
+    if not hasattr(_fitz_patch.Rect, 'get_area'):
+        _fitz_patch.Rect.get_area = lambda self, unit='px': abs(self.width * self.height)
+    del _fitz_patch
+except Exception:
+    pass
 
 if sys.platform == "win32":
     try:
@@ -169,6 +183,29 @@ def _browser_is_open():
 
 # 每次抓取完成后记录本次批次的 resume_id 集合，供"评估本批次"使用
 _scrape_sessions: dict = {}
+
+# =============================================================================
+# 后台批量下载全局状态
+# =============================================================================
+
+_dl_status: dict = {
+    "state":        "idle",   # idle | running | cancelled | done | error
+    "job_name":     "",
+    "filetype":     "",       # pdf | word | both
+    "total":        0,
+    "done":         0,
+    "failed":       0,        # 51job 访问/CDP 失败的数量
+    "conv_failed":  0,        # PDF→Word 转换失败的数量（文件已从51job获取）
+    "current_name": "",
+    "results":      [],       # [{resume_id, name, pdf_ok, word_ok, fetch_err, word_conv_err}]
+    "error":        "",
+    "started_at":   0.0,
+    "completed_at": 0.0,
+}
+_dl_lock        = threading.Lock()
+_dl_cancel_flag = threading.Event()
+
+_RESUME_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]{4,80}$')
 
 # =============================================================================
 # 分布式抓取代理管理
@@ -531,64 +568,275 @@ def _wait_for_new_file(directory, before_set, timeout=15):
     return None
 
 
-def _try_download_files_local(driver, resume_id):
+def _extract_browser_auth(drv):
     """
-    服务端本机抓取时：直接从51job下载PDF/Word，存入 FILES_DIR。
-    完全异常安全，失败静默跳过。
+    从已登录浏览器提取完整鉴权状态：Cookie + localStorage + sessionStorage。
+    现代 SPA（如51job ehire）将 Auth Token 存在 localStorage，仅转移 Cookie 不够。
     """
-    try:
-        before = _snapshot_dir(DL_TMP_DIR)
+    cookies = drv.get_cookies()
 
-        click_main = """
-        var candidates = Array.from(document.querySelectorAll(
-            'button, a, [role="button"], [class*="download"]'));
-        for (var el of candidates) {
-            var txt = el.textContent.trim();
-            var cls = el.className || '';
-            if ((txt.includes('下载简历') || txt === '下载' ||
-                 cls.includes('download') || cls.includes('Download')) &&
-                el.offsetParent !== null) {
-                el.click();
-                return txt;
-            }
-        }
-        return null;
-        """
-        if not driver.execute_script(click_main):
+    def _safe_storage(script):
+        try:
+            result = drv.execute_script(script)
+            return result if isinstance(result, dict) else {}
+        except Exception:
+            return {}
+
+    local_storage = _safe_storage(
+        "var o={};"
+        "try{ for(var i=0;i<localStorage.length;i++){"
+        "  var k=localStorage.key(i); o[k]=localStorage.getItem(k);} }catch(e){}"
+        "return o;")
+
+    session_storage = _safe_storage(
+        "var o={};"
+        "try{ for(var i=0;i<sessionStorage.length;i++){"
+        "  var k=sessionStorage.key(i); o[k]=sessionStorage.getItem(k);} }catch(e){}"
+        "return o;")
+
+    logger.info(f"[下载] 鉴权状态：Cookie {len(cookies)} 个，"
+                f"localStorage {len(local_storage)} 项，"
+                f"sessionStorage {len(session_storage)} 项")
+    return cookies, local_storage, session_storage
+
+
+def _create_headless_driver(cookies, local_storage, session_storage):
+    """
+    启动临时无头 Edge，克隆主浏览器的完整鉴权状态：
+      1. Cookie（清除匿名 Session 后重新注入）
+      2. localStorage（SPA Auth Token 的真正存储位置）
+      3. sessionStorage
+    注入后执行 refresh()，令 Vue.js SPA 重新读取 localStorage 恢复登录状态。
+    """
+    from selenium import webdriver
+    from selenium.webdriver.edge.options import Options
+
+    headless_profile = os.path.join(ROOT, "data", "headless_profile")
+    os.makedirs(headless_profile, exist_ok=True)
+
+    opts = Options()
+    opts.add_argument("--headless")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument(f"--user-data-dir={headless_profile}")
+
+    drv = None
+    if _prewarm_driver_future:
+        try:
+            driver_path = _prewarm_driver_future.result(timeout=60)
+            if driver_path:
+                from selenium.webdriver.edge.service import Service
+                drv = webdriver.Edge(service=Service(driver_path), options=opts)
+        except Exception:
+            pass
+    if drv is None:
+        drv = webdriver.Edge(options=opts)
+
+    # ① 先导航到目标域名（localStorage 有域名作用域限制，必须先到该域）
+    drv.get("https://ehire.51job.com")
+    time.sleep(1.5)
+
+    # ② 清除匿名 Session Cookie，注入已登录 Cookie
+    drv.delete_all_cookies()
+    for ck in cookies:
+        try:
+            c = {k: v for k, v in ck.items()
+                 if k in ("name", "value", "domain", "path", "secure", "httpOnly")}
+            drv.add_cookie(c)
+        except Exception:
+            pass
+
+    # ③ 注入 localStorage（SPA Auth Token 的关键存储）
+    if local_storage:
+        drv.execute_script(
+            "var d=arguments[0]; localStorage.clear();"
+            "Object.entries(d).forEach(function(kv){"
+            "  try{localStorage.setItem(kv[0],kv[1]);}catch(e){} });",
+            local_storage)
+
+    # ④ 注入 sessionStorage
+    if session_storage:
+        drv.execute_script(
+            "var d=arguments[0]; sessionStorage.clear();"
+            "Object.entries(d).forEach(function(kv){"
+            "  try{sessionStorage.setItem(kv[0],kv[1]);}catch(e){} });",
+            session_storage)
+
+    # ⑤ 刷新页面，让 Vue.js SPA 重新初始化并读取 localStorage 中的 Token
+    drv.refresh()
+    time.sleep(2.5)
+
+    return drv
+
+
+def _bg_download_worker(items, filetype, job_name):
+    """
+    后台顺序下载简历（真正的文字版 PDF）。
+    原理：克隆主浏览器完整鉴权状态（Cookie+localStorage+sessionStorage）
+         → 注入无头 Edge → Page.printToPDF（文字版 PDF）。
+    Word 格式通过 pdf2docx 转换。
+    """
+    need_pdf  = filetype in ("pdf",  "both")
+    need_word = filetype in ("word", "both")
+
+    def _upd(**kw):
+        with _dl_lock:
+            _dl_status.update(kw)
+
+    _upd(state="running", job_name=job_name, filetype=filetype,
+         total=len(items), done=0, failed=0, conv_failed=0, current_name="",
+         results=[], error="", started_at=time.time(), completed_at=0.0)
+
+    results = []
+    headless_drv = None
+
+    try:
+        main_drv = _get_driver()
+        if not main_drv:
+            _upd(state="error", error="浏览器已关闭，请先打开浏览器并登录 51job",
+                 completed_at=time.time())
             return
 
-        time.sleep(1.5)
+        # 确保主浏览器在 ehire.51job.com 域（localStorage 域名需匹配）
+        if "ehire.51job.com" not in main_drv.current_url:
+            main_drv.get("https://ehire.51job.com")
+            time.sleep(2.5)
+        if "51job.com" not in main_drv.current_url:
+            _upd(state="error", error="浏览器未登录 51job，请先登录",
+                 completed_at=time.time())
+            return
 
-        click_fmt = """
-        var labels = arguments[0];
-        var items = Array.from(document.querySelectorAll(
-            'li, a, button, [role="option"], [role="menuitem"], [class*="item"]'));
-        for (var el of items) {
-            var txt = el.textContent.trim();
-            if (el.offsetParent !== null)
-                for (var lbl of labels)
-                    if (txt.includes(lbl)) { el.click(); return txt; }
-        }
-        return null;
-        """
-        driver.execute_script(click_fmt, ["PDF", "pdf"])
-        pdf_tmp = _wait_for_new_file(DL_TMP_DIR, before, timeout=15)
-        if pdf_tmp:
-            shutil.move(pdf_tmp, os.path.join(FILES_DIR, resume_id + ".pdf"))
-            before = _snapshot_dir(DL_TMP_DIR)
+        cookies, local_storage, session_storage = _extract_browser_auth(main_drv)
+        headless_drv = _create_headless_driver(cookies, local_storage, session_storage)
 
-        found = driver.execute_script(click_fmt, ["Word", "WORD", "word", "Doc"])
-        if not found:
-            driver.execute_script(click_main)
-            time.sleep(1)
-            driver.execute_script(click_fmt, ["Word", "WORD", "word", "Doc"])
+        for i, item in enumerate(items):
+            if _dl_cancel_flag.is_set():
+                _upd(state="cancelled", completed_at=time.time())
+                return
 
-        word_tmp = _wait_for_new_file(DL_TMP_DIR, before, timeout=15)
-        if word_tmp:
-            shutil.move(word_tmp, os.path.join(FILES_DIR, resume_id + ".docx"))
+            with _driver_lock:
+                active_job = _driver_state.get("job_name")
+            if active_job and pipeline.get_state(active_job).get("running"):
+                _upd(state="error",
+                     error=f"抓取「{active_job}」已启动，后台下载已中止以避免冲突",
+                     completed_at=time.time())
+                return
+
+            resume_id = item["resume_id"]
+            name      = item.get("name", resume_id)
+            _upd(current_name=name)
+
+            pdf_path  = os.path.join(FILES_DIR, resume_id + ".pdf")
+            word_path = os.path.join(FILES_DIR, resume_id + ".docx")
+            pdf_exists  = os.path.exists(pdf_path)
+            word_exists = os.path.exists(word_path)
+
+            res = {"resume_id": resume_id, "name": name,
+                   "pdf_ok": False, "word_ok": False,
+                   "fetch_err": False, "word_conv_err": False}
+
+            all_done = (not need_pdf or pdf_exists) and (not need_word or word_exists)
+            if all_done:
+                res["pdf_ok"]  = need_pdf  and pdf_exists
+                res["word_ok"] = need_word and word_exists
+                results.append(res)
+                _upd(done=i + 1, results=list(results))
+                continue
+
+            tmp_pdf = None
+            try:
+                url = (f"https://ehire.51job.com/Revision/talent/resume/detail"
+                       f"?resumeId={resume_id}")
+                headless_drv.get(url)
+                time.sleep(3)
+
+                final_url = headless_drv.current_url
+                if "resumeId" not in final_url or "detail" not in final_url:
+                    raise RuntimeError(
+                        f"Cookie 注入后仍被重定向至 {final_url}，"
+                        "请关闭浏览器后重新打开并登录 51job"
+                    )
+
+                need_gen = ((need_pdf and not pdf_exists) or
+                            (need_word and not word_exists and not pdf_exists))
+
+                pdf_bytes = None
+                if need_gen:
+                    cdp_result = headless_drv.execute_cdp_cmd("Page.printToPDF", {
+                        "printBackground": True,
+                        "format": "A4",
+                        "marginTop": 0.5, "marginBottom": 0.5,
+                        "marginLeft": 0.4, "marginRight": 0.4,
+                        "scale": 1.0,
+                    })
+                    pdf_bytes = base64.b64decode(cdp_result.get("data", ""))
+                    if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
+                        raise ValueError("打印结果不是有效 PDF")
+                    if len(pdf_bytes) > 50 * 1024 * 1024:
+                        raise ValueError("PDF 超过 50MB，跳过")
+
+                if need_pdf and not pdf_exists and pdf_bytes:
+                    with open(pdf_path, "wb") as f:
+                        f.write(pdf_bytes)
+
+                if need_word and not word_exists:
+                    source_pdf = pdf_path if os.path.exists(pdf_path) else None
+                    if source_pdf is None and pdf_bytes:
+                        tmp_pdf = pdf_path + ".tmp_conv"
+                        with open(tmp_pdf, "wb") as f:
+                            f.write(pdf_bytes)
+                        source_pdf = tmp_pdf
+                    if source_pdf:
+                        try:
+                            from pdf2docx import Converter
+                            cv = Converter(source_pdf)
+                            cv.convert(word_path, start=0, end=None)
+                            cv.close()
+                        except ImportError:
+                            logger.warning("pdf2docx 未安装")
+                            res["word_conv_err"] = True
+                        except Exception as conv_e:
+                            logger.warning(f"PDF→Word 转换失败 ({resume_id}): {conv_e}")
+                            res["word_conv_err"] = True
+
+                res["pdf_ok"]  = need_pdf  and os.path.exists(pdf_path)
+                res["word_ok"] = need_word and os.path.exists(word_path)
+
+            except Exception as e:
+                logger.warning(f"后台下载失败 ({resume_id}): {e}")
+                res["fetch_err"] = True
+            finally:
+                if tmp_pdf and os.path.exists(tmp_pdf):
+                    try:
+                        os.remove(tmp_pdf)
+                    except OSError:
+                        pass
+
+            results.append(res)
+            failed      = sum(1 for r in results if r.get("fetch_err"))
+            conv_failed = sum(1 for r in results if r.get("word_conv_err"))
+            _upd(done=i + 1, failed=failed, conv_failed=conv_failed, results=list(results))
+
+            if i < len(items) - 1 and not _dl_cancel_flag.is_set():
+                time.sleep(2.0)
 
     except Exception as e:
-        logger.debug(f"本机下载文件失败 ({resume_id}): {e}")
+        logger.error(f"后台下载 worker 异常崩溃: {e}")
+        _upd(state="error", error=f"下载异常终止：{e}",
+             completed_at=time.time())
+        return
+    finally:
+        if headless_drv:
+            try:
+                headless_drv.quit()
+            except Exception:
+                pass
+
+    failed      = sum(1 for r in results if r.get("fetch_err"))
+    conv_failed = sum(1 for r in results if r.get("word_conv_err"))
+    _upd(state="done", done=len(results), failed=failed, conv_failed=conv_failed,
+         results=results, current_name="", completed_at=time.time())
 
 
 def _gz_or_plain_path(raw_html_path):
@@ -1203,8 +1451,10 @@ def api_triage_list():
         industries_required = [s.strip() for s in ind_raw.split("、") if s.strip()]
 
     include_excluded = request.args.get("include_excluded", "0") == "1"
+    exclude_processed = request.args.get("exclude_processed", "0") == "1"
     all_evals = database.list_evaluations_for_job(job_name,
-                                                   include_hidden=include_excluded)
+                                                   include_hidden=include_excluded,
+                                                   exclude_processed=exclude_processed)
 
     # 注入 structured_json 用于 ranker（一次批量查询，避免 N 次开关连接）
     if all_evals:
@@ -2251,6 +2501,8 @@ def api_upload_resume_file():
 @app.route("/api/resume/download/<resume_id>/<filetype>")
 def api_resume_download(resume_id, filetype):
     """向前端提供简历 PDF 或 Word 文件下载"""
+    if not _RESUME_ID_RE.match(resume_id):
+        return "无效ID", 400
     if filetype not in ("pdf", "word"):
         return "无效文件类型", 400
     path = _resume_file_path(resume_id, filetype)
@@ -2266,16 +2518,177 @@ def api_resume_download(resume_id, filetype):
 @app.route("/api/resume/view/<resume_id>/pdf")
 def api_resume_view_pdf(resume_id):
     """向处理台 iframe 提供 PDF 内嵌预览（非附件下载）"""
+    if not _RESUME_ID_RE.match(resume_id):
+        return "无效ID", 400
     path = _resume_file_path(resume_id, "pdf")
     if not os.path.exists(path):
         return "PDF 文件不存在", 404
     return send_file(path, mimetype="application/pdf")
 
 
+@app.route("/api/batch_download", methods=["POST"])
+def api_batch_download():
+    """批量下载简历文件，打包成 ZIP 返回。
+    Body: {items: [{resume_id, name}], filetype: 'pdf'|'word', job_name: str}
+    仅下载本地已存在的文件，跳过未下载的。单文件时直接返回原文件不打包。
+    """
+    data = request.get_json() or {}
+    items = data.get("items", [])
+    filetype = data.get("filetype", "pdf")
+    job_name = data.get("job_name", "岗位")
+
+    if filetype not in ("pdf", "word"):
+        return jsonify(ok=False, message="无效文件类型"), 400
+    if not items:
+        return jsonify(ok=False, message="未选择任何候选人"), 400
+
+    ext = ".pdf" if filetype == "pdf" else ".docx"
+    mime_single = ("application/pdf" if filetype == "pdf"
+                   else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    found = []
+    for item in items[:200]:
+        rid = str(item.get("resume_id", "")).strip()
+        # 严格校验 resume_id，防止路径穿越（如 "../../secret"）
+        if not _RESUME_ID_RE.match(rid):
+            continue
+        raw_name = (item.get("name") or rid).strip()
+        # 清洗姓名：防止路径分隔符进入 ZIP entry（ZipSlip 防御）
+        name = re.sub(r'[/\\:*?"<>|]', '_', raw_name)[:50] or rid[:50]
+        path = os.path.join(FILES_DIR, rid + ext)
+        if os.path.exists(path):
+            found.append((path, name, rid))
+
+    if not found:
+        return jsonify(ok=False, message="所选候选人均无本地文件，请先在驾驶舱触发下载"), 400
+
+    if len(found) == 1:
+        path, name, rid = found[0]
+        filename = f"{name}_{rid[:8]}{ext}"
+        return send_file(path, as_attachment=True, download_name=filename, mimetype=mime_single)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        seen = {}
+        for path, name, rid in found:
+            arcname = f"{name}_{rid[:8]}{ext}"
+            if arcname in seen:
+                seen[arcname] += 1
+                arcname = f"{name}_{rid[:8]}_{seen[arcname]}{ext}"
+            else:
+                seen[arcname] = 1
+            zf.write(path, arcname)
+    buf.seek(0)
+
+    type_label = "PDF" if filetype == "pdf" else "Word"
+    safe_job   = re.sub(r'[/\\:*?"<>|]', '_', str(job_name))[:30]
+    zip_name   = f"{safe_job}_简历_{type_label}.zip"
+    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=zip_name)
+
+
+# =============================================================================
+# 后台批量下载 API（通过 Selenium 浏览器从51job下载到本地）
+# =============================================================================
+
+@app.route("/api/resume/bg_download", methods=["POST"])
+def api_bg_download():
+    """
+    启动后台批量下载任务。
+    Body: {items:[{resume_id,name}], filetype:'pdf'|'word'|'both', job_name:str}
+    最多同时运行一个下载任务；浏览器未打开或正在抓取时拒绝。
+    """
+    data     = request.get_json() or {}
+    items    = data.get("items", [])
+    filetype = data.get("filetype", "pdf")
+    job_name = (data.get("job_name") or "岗位")[:50]
+
+    if filetype not in ("pdf", "word", "both"):
+        return jsonify(ok=False, message="无效文件类型，需为 pdf / word / both"), 400
+
+    # 校验并清洗 resume_id（防路径穿越 / URL 注入）；清洗 name（防 ZipSlip）
+    validated = []
+    for item in items[:200]:
+        rid  = str(item.get("resume_id", "")).strip()
+        if not _RESUME_ID_RE.match(rid):
+            continue
+        raw_name = str(item.get("name", rid))
+        # 移除路径分隔符和 ZIP 危险字符，防止 ZipSlip 攻击
+        name = re.sub(r'[/\\:*?"<>|]', '_', raw_name).strip()[:50] or rid[:50]
+        validated.append({"resume_id": rid, "name": name})
+
+    if not validated:
+        return jsonify(ok=False, message="无合法的候选人（resume_id 格式错误）"), 400
+
+    # 浏览器必须已打开
+    if not _browser_is_open():
+        return jsonify(
+            ok=False,
+            message="浏览器未打开。请先在驾驶舱点击「打开浏览器」并登录51job，再使用后台下载。"
+        ), 400
+
+    # 抓取进行中时拒绝（避免两个任务争用浏览器）
+    with _driver_lock:
+        active_job = _driver_state.get("job_name")
+    if active_job and pipeline.get_state(active_job).get("running"):
+        return jsonify(
+            ok=False,
+            message=f"正在抓取「{active_job}」，请等待抓取完成后再使用后台下载。"
+        ), 409
+
+    # 原子性占用槽位（锁内检查+设置，防并发竞争）
+    with _dl_lock:
+        if _dl_status["state"] == "running":
+            return jsonify(
+                ok=False,
+                message="已有下载任务正在运行，请等待完成或点击取消后重试。"
+            ), 409
+        _dl_status["state"] = "running"               # 抢占槽位
+
+    _dl_cancel_flag.clear()
+    t = threading.Thread(
+        target=_bg_download_worker,
+        args=(validated, filetype, job_name),
+        daemon=True,
+        name="bg-dl-worker",
+    )
+    t.start()
+
+    return jsonify(ok=True, count=len(validated),
+                   message=f"已开始后台下载 {len(validated)} 份简历")
+
+
+@app.route("/api/resume/bg_status")
+def api_bg_status():
+    """返回后台下载进度（前端每 2 秒轮询一次）。
+    运行中不返回 results 列表（避免大量轮询浪费带宽），完成后才附带。
+    """
+    with _dl_lock:
+        snap = {k: v for k, v in _dl_status.items() if k != "results"}
+        # 完成/取消/错误时才附带结果列表（最多200条）
+        if _dl_status["state"] in ("done", "cancelled", "error"):
+            snap["results"] = _dl_status["results"][:200]
+    return jsonify(ok=True, **snap)
+
+
+@app.route("/api/resume/bg_cancel", methods=["POST"])
+def api_bg_cancel():
+    """取消正在进行的后台下载（信号式，worker 在下一个 resume 检查时退出）"""
+    _dl_cancel_flag.set()
+    with _dl_lock:
+        if _dl_status["state"] == "running":
+            _dl_status["state"]        = "cancelled"
+            _dl_status["completed_at"] = time.time()
+    return jsonify(ok=True, message="已发送取消信号")
+
+
 @app.route("/api/resume/file_info", methods=["POST"])
 def api_resume_file_info():
     """批量查询指定 resume_id 列表的文件存在情况"""
-    resume_ids = (request.get_json() or {}).get("resume_ids", [])
+    raw = (request.get_json() or {}).get("resume_ids", [])
+    if not raw:
+        return jsonify(ok=True, pdf=[], word=[])
+    # 过滤非法 ID，防止路径探测
+    resume_ids = [str(r) for r in raw[:500] if _RESUME_ID_RE.match(str(r))]
     if not resume_ids:
         return jsonify(ok=True, pdf=[], word=[])
     has_pdf, has_word = _check_resume_files(resume_ids)
@@ -2318,17 +2731,39 @@ def api_resume_download_online():
             return jsonify(ok=False, message="服务器正在抓取中，请稍后再试"), 409
 
         def _server_dl():
+            hdrv = None
             try:
-                from selenium.webdriver.common.by import By
-                from selenium.webdriver.support.ui import WebDriverWait
-                from selenium.webdriver.support import expected_conditions as EC
-                server_driver.get(
-                    f"https://ehire.51job.com/Revision/talent/resume/detail?resumeId={resume_id}")
-                WebDriverWait(server_driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "work")))
-                _try_download_files_local(server_driver, resume_id)
+                # localStorage 是域名隔离的，必须先导航到 ehire.51job.com 才能读取
+                if "ehire.51job.com" not in server_driver.current_url:
+                    server_driver.get("https://ehire.51job.com")
+                    time.sleep(2.5)
+                cookies, local_storage, session_storage = _extract_browser_auth(server_driver)
+                hdrv = _create_headless_driver(cookies, local_storage, session_storage)
+                url = (f"https://ehire.51job.com/Revision/talent/resume/detail"
+                       f"?resumeId={resume_id}")
+                hdrv.get(url)
+                time.sleep(3)
+                final_url = hdrv.current_url
+                if "resumeId" not in final_url or "detail" not in final_url:
+                    raise RuntimeError(f"被重定向（{final_url}），请重新登录 51job")
+                cdp_result = hdrv.execute_cdp_cmd("Page.printToPDF", {
+                    "printBackground": True, "format": "A4",
+                    "marginTop": 0.5, "marginBottom": 0.5,
+                    "marginLeft": 0.4, "marginRight": 0.4, "scale": 1.0,
+                })
+                pdf_bytes = base64.b64decode(cdp_result.get("data", ""))
+                if pdf_bytes and pdf_bytes[:4] == b"%PDF":
+                    with open(os.path.join(FILES_DIR, resume_id + ".pdf"), "wb") as f:
+                        f.write(pdf_bytes)
+                    logger.info(f"[按需下载] PDF 已保存: {resume_id}")
+                else:
+                    raise RuntimeError("Page.printToPDF 返回数据为空或不是有效PDF")
             except Exception as e:
                 logger.warning(f"按需下载失败 ({resume_id}): {e}")
+            finally:
+                if hdrv:
+                    try: hdrv.quit()
+                    except Exception: pass
 
         threading.Thread(target=_server_dl, daemon=True).start()
         return jsonify(ok=True, queued=True)
@@ -2675,7 +3110,7 @@ def _backup_prompt(job_name, prompt_text):
     return ts
 
 
-REQUIRED_PROMPT_KEYS = ["verdict", "has_hard_fail"]
+REQUIRED_PROMPT_KEYS = []  # P4-B: OUTPUT_INSTRUCTION is appended dynamically; context-only prompts are valid
 
 
 # =============================================================================
@@ -3083,6 +3518,49 @@ def api_prompt_test():
         return jsonify(ok=False, message=str(e))
 
 
+@app.route("/api/prompt/preview/<path:job_name>")
+def api_prompt_preview(job_name):
+    """返回最终注入 AI 的完整 Prompt 预览（含规则段、细则段）。"""
+    job = database.get_job(job_name)
+    if not job:
+        return jsonify(ok=False, message="岗位不存在"), 404
+    clean = judger._clean_job_prompt(job.get("prompt_text") or "")
+    rules = judger.build_rules_section(job_name)
+    criteria = judger.build_criteria_notes_section(job_name)
+    full = f"{clean}\n\n{rules}\n\n{criteria}\n\n# 输入数据说明\n（候选人 JSON 将在此插入）\n\n{judger.OUTPUT_INSTRUCTION}"
+    return jsonify(ok=True, preview=full.strip())
+
+
+@app.route("/api/jobs/update_eval_rules", methods=["POST"])
+def api_jobs_update_eval_rules():
+    """保存岗位 AI 评判规则（config_json.rules），供 prompt_editor 使用。"""
+    data = request.get_json() or {}
+    job_name = data.get("job_name", "")
+    rules = data.get("rules")
+    if not job_name or rules is None:
+        return jsonify(ok=False, message="缺少 job_name 或 rules"), 400
+    ok = database.update_job_eval_rules(job_name, rules)
+    if ok:
+        return jsonify(ok=True, message=f"已保存 {len(rules)} 条评判规则")
+    return jsonify(ok=False, message="岗位不存在"), 404
+
+
+@app.route("/api/rules/eval_list")
+def api_rules_eval_list():
+    """返回岗位 AI 评判规则（config_json.rules）列表。"""
+    job_name = request.args.get("job_name", "")
+    if not job_name:
+        return jsonify(ok=False, message="缺少 job_name"), 400
+    job = database.get_job(job_name)
+    if not job:
+        return jsonify(ok=False, message="岗位不存在"), 404
+    try:
+        config = json.loads(job.get("config_json") or "{}")
+    except Exception:
+        config = {}
+    return jsonify(ok=True, rules=config.get("rules", []))
+
+
 # =============================================================================
 # =============================================================================
 # API：清理助手（语义分组）
@@ -3474,25 +3952,46 @@ def api_manual_import_confirm():
         return jsonify(ok=False, message="岗位不存在"), 404
     job_id = job["id"]
 
+    _safe_upload_dir = os.path.realpath(UPLOAD_TMP_DIR) + os.sep
+    _safe_ext = {".pdf", ".docx", ".doc"}
+
     count = 0
     errors = []
     for item in items:
         resume_id = item.get("resume_id", "")
-        filename = item.get("filename", "")
-        tmp_path = item.get("file_temp_path", "")
+        filename  = item.get("filename", "")
+        tmp_path  = item.get("file_temp_path", "")
         structured_json_str = item.get("structured_json", "{}")
 
         if not resume_id or not tmp_path:
             errors.append(f"{filename}: 缺少必要参数")
             continue
-        if not os.path.exists(tmp_path):
+
+        # 校验 resume_id 格式（防路径穿越）
+        if not _RESUME_ID_RE.match(str(resume_id)):
+            errors.append(f"{filename}: 无效的 resume_id")
+            continue
+
+        # 校验 tmp_path 必须在 UPLOAD_TMP_DIR 内（防客户端替换为任意服务器路径）
+        abs_tmp = os.path.realpath(str(tmp_path))
+        if not abs_tmp.startswith(_safe_upload_dir):
+            errors.append(f"{filename}: 非法文件路径")
+            continue
+
+        if not os.path.exists(abs_tmp):
             errors.append(f"{filename}: 临时文件不存在（可能已过期，请重新上传）")
             continue
 
+        # 校验扩展名（防写入非简历文件）
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in _safe_ext:
+            ext = os.path.splitext(abs_tmp)[1].lower()
+        if ext not in _safe_ext:
+            ext = ".pdf"
+
         try:
-            ext = os.path.splitext(filename)[1].lower() or ".pdf"
             dest_file = os.path.join(FILES_DIR, f"{resume_id}{ext}")
-            shutil.move(tmp_path, dest_file)
+            shutil.move(abs_tmp, dest_file)
 
             # 保存文字为 HTML（供处理台展示）
             try:
@@ -3500,12 +3999,14 @@ def api_manual_import_confirm():
                 text = _fp.extract_text_from_file(dest_file)
             except Exception:
                 text = ""
+            # html.escape 防止提取文字中含 HTML 标签时造成 XSS
             html_content = (
                 f"<!DOCTYPE html><html><head>"
                 f"<meta charset='utf-8'>"
                 f"<style>body{{font-family:sans-serif;font-size:13px;line-height:1.7;"
                 f"padding:20px;white-space:pre-wrap}}</style></head>"
-                f"<body><h3>简历原文（手动导入）</h3><pre>{text}</pre></body></html>"
+                f"<body><h3>简历原文（手动导入）</h3>"
+                f"<pre>{html.escape(text)}</pre></body></html>"
             )
             text_html_path = os.path.join(FILES_DIR, f"{resume_id}_text.html")
             with open(text_html_path, "w", encoding="utf-8") as fh:

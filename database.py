@@ -378,6 +378,24 @@ def update_job_rule_config(job_id, rule_config_json):
             (rule_config_json, now_iso(), job_id))
 
 
+def update_job_eval_rules(job_name, rules_list):
+    """更新 config_json.rules（AI 评判规则，含 evidence_hint）。"""
+    job = get_job(job_name)
+    if not job:
+        return False
+    try:
+        config = json.loads(job.get("config_json") or "{}")
+    except Exception:
+        config = {}
+    config["rules"] = rules_list
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET config_json=?, updated_at=? WHERE name=?",
+            (json.dumps(config, ensure_ascii=False), now_iso(), job_name)
+        )
+    return True
+
+
 def list_jobs():
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM jobs ORDER BY name").fetchall()
@@ -723,10 +741,11 @@ def get_evaluated_resume_ids(job_id):
         return {r["resume_id"] for r in rows}
 
 
-def list_evaluations_for_job(job_name, include_hidden=False):
+def list_evaluations_for_job(job_name, include_hidden=False, exclude_processed=False):
     """
     返回该岗位的所有评估记录，按 verdict 排序（深绿→蓝色→黄→排除）。
     include_hidden=False 时不返回 verdict='排除' 的记录。
+    exclude_processed=True 时不返回已有 approved/disapproved/hired/rejected outcome 的记录。
     同时返回 latest_action 与 latest_note。
     """
     verdict_order = {"深绿": 0, "蓝色": 1, "黄色": 2, "排除": 3}
@@ -746,6 +765,13 @@ def list_evaluations_for_job(job_name, include_hidden=False):
         """
         if not include_hidden:
             sql += " AND e.verdict != '排除'"
+        if exclude_processed:
+            sql += """
+                AND NOT EXISTS (
+                    SELECT 1 FROM outcomes
+                    WHERE evaluation_id = e.id
+                    AND action IN ('approved', 'disapproved', 'hired', 'rejected')
+                )"""
         rows = conn.execute(sql, (job_name,)).fetchall()
         results = [dict(r) for r in rows]
     results.sort(key=lambda r: (verdict_order.get(r["verdict"], 99), -r["id"]))

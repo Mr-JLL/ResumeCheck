@@ -84,7 +84,6 @@
       </div>
       <button class="btn" id="btn-cleanup" style="margin-top:4px">🗑 清理候选人</button>
       <button class="btn cp-btn-danger" id="btn-reset" style="margin-top:2px;font-size:10px;opacity:.65">⚠ 完全重置</button>
-      <button class="btn cp-btn-danger" id="btn-clear-all" onclick="openClearAllModal()" style="margin-top:2px;font-size:10px;opacity:.65">🗑 清空所有简历数据</button>
     </div>
 
     <!-- 快速入口 -->
@@ -117,27 +116,6 @@
 
   <!-- 错误通知容器 -->
   <div id="err-toast-wrap" style="position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;gap:6px;max-width:380px;pointer-events:none"></div>
-
-  <!-- ══════════ 清空所有数据 Modal ══════════ -->
-  <div id="clear-all-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1100;align-items:center;justify-content:center">
-    <div style="background:#fff;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.3);padding:24px;width:380px;max-width:95vw">
-      <div style="font-size:15px;font-weight:700;color:#c0392b;margin-bottom:10px">🗑 清空所有简历数据</div>
-      <p style="font-size:12px;color:#555;margin:0 0 12px">此操作将永久删除：<br>
-        • 全部候选人 &amp; 评估记录<br>
-        • 预过滤记录 &amp; HR 操作记录<br>
-        • 人才池 &amp; 偏好信号<br>
-        • 所有工作区 HTML 文件<br>
-        • 向量库（Chroma）<br>
-        <b>岗位配置（Prompt/筛选条件）不会删除。</b>
-      </p>
-      <p style="font-size:12px;color:#c0392b;margin:0 0 10px">此操作不可撤销！请输入 <b>DELETE</b> 确认：</p>
-      <input id="clear-confirm-input" type="text" placeholder="输入 DELETE" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #e74c3c;border-radius:5px;font-size:13px;margin-bottom:12px">
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button onclick="closeClearAllModal()" style="padding:7px 16px;border:1px solid #ccc;border-radius:5px;background:#f5f6fa;cursor:pointer;font-size:13px">取消</button>
-        <button onclick="doCloseAll()" style="padding:7px 18px;border:none;border-radius:5px;background:#c0392b;color:#fff;cursor:pointer;font-size:13px;font-weight:600">确认清空</button>
-      </div>
-    </div>
-  </div>
 
   <!-- ══════════ 驾驶舱批量删除确认 Modal ══════════ -->
   <div id="delete-confirm-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1100;align-items:center;justify-content:center">
@@ -217,6 +195,11 @@
   <!-- ══════════ 右栏 ══════════ -->
   <div class="cp-right">
 
+    <!-- 已处理提示 -->
+    <div style="font-size:11px;color:#aaa;text-align:right;padding:2px 2px 6px;flex-shrink:0">
+      已通过 / 不通过的候选人仅显示于对应页面，不再出现在此处
+    </div>
+
     <!-- 过滤 Tab -->
     <div class="cp-topbar">
       <div class="cp-tabs" id="cp-tabs">
@@ -240,11 +223,6 @@
      background:#2c3e50;color:#fff;padding:10px 20px;z-index:800;
      align-items:center;gap:12px;box-shadow:0 -2px 12px rgba(0,0,0,.25)">
   <span style="font-size:13px">已选 <b id="sel-count">0</b> 人</span>
-  <button onclick="openDlPanel()"
-          style="padding:6px 16px;border:none;border-radius:5px;background:#27ae60;
-                 color:#fff;font-size:13px;font-weight:700;cursor:pointer">
-    ⬇ 下载简历文件
-  </button>
   <button onclick="openDeleteConfirm()"
           style="padding:6px 14px;border:none;border-radius:5px;background:#e74c3c;
                  color:#fff;font-size:13px;font-weight:700;cursor:pointer">
@@ -257,32 +235,6 @@
   </button>
 </div>
 
-<!-- ══════════ 下载侧边面板 ══════════ -->
-<div id="dl-panel" style="display:none;position:fixed;right:0;top:0;bottom:0;width:340px;
-     background:#fff;border-left:1px solid #e0e0e0;z-index:900;
-     box-shadow:-4px 0 20px rgba(0,0,0,.12);flex-direction:column">
-  <div style="background:#2c3e50;color:#fff;padding:14px 16px;display:flex;
-              align-items:center;justify-content:space-between;flex-shrink:0">
-    <span style="font-size:14px;font-weight:700">⬇ 下载简历文件</span>
-    <button onclick="closeDlPanel()"
-            style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer;line-height:1">×</button>
-  </div>
-  <div id="dl-browser-warn" style="display:none;background:#fff3cd;border-bottom:1px solid #ffc107;
-       padding:9px 14px;font-size:12px;color:#856404;flex-shrink:0">
-    ⚠ 文件不存在时需要浏览器处于打开并登录状态才能在线下载。
-    请先点击左侧「打开浏览器」并登录 51job。
-  </div>
-  <div id="dl-list" style="flex:1;overflow-y:auto;padding:12px 14px;display:flex;
-       flex-direction:column;gap:8px">
-    <!-- 动态填充 -->
-  </div>
-  <div style="padding:10px 14px;border-top:1px solid #f0f0f0;font-size:11px;color:#aaa;flex-shrink:0">
-    绿色按钮=文件已存储可直接下载；灰色=需浏览器在线下载
-  </div>
-</div>
-<!-- 点击面板外侧关闭 -->
-<div id="dl-overlay" onclick="closeDlPanel()"
-     style="display:none;position:fixed;inset:0;z-index:850;background:rgba(0,0,0,.15)"></div>
 
 {% endblock %}
 
@@ -473,18 +425,6 @@
 .cc-pdf {background:#ffe0e0;color:#c0392b}
 .cc-doc {background:#e0ecff;color:#1a5276}
 
-/* ── 下载面板按钮 ── */
-.dl-item{
-  display:flex;align-items:center;gap:7px;
-  padding:8px 10px;border:1px solid #eee;border-radius:7px;background:#fafafa}
-.dl-item-name{flex:1;font-size:13px;font-weight:600;color:#2c3e50;overflow:hidden;
-              white-space:nowrap;text-overflow:ellipsis}
-.dl-btn{padding:4px 11px;border:none;border-radius:4px;font-size:12px;
-        font-weight:700;cursor:pointer;white-space:nowrap}
-.dl-btn-ok  {background:#27ae60;color:#fff}
-.dl-btn-ok:hover{background:#219a52}
-.dl-btn-off {background:#e8e8e8;color:#aaa;cursor:default}
-.dl-btn-spin{background:#3498db;color:#fff}
 </style>
 
 <script>
@@ -634,7 +574,7 @@ function queueCandRefresh(ms) {
 async function loadCands() {
   try {
     const r = await fetch(
-      `/api/triage/list?job_name=${encodeURIComponent(JOB)}&include_excluded=1`);
+      `/api/triage/list?job_name=${encodeURIComponent(JOB)}&include_excluded=1&exclude_processed=1`);
     const d = await r.json();
     if (d.ok) { allCands = d.candidates; renderCands(); }
   } catch (_) {}
@@ -643,14 +583,14 @@ async function loadCands() {
 // action badge 现在在 cc-body 里显示，颜色区分
 
 // ── 多选状态 ──────────────────────────────────────────
-let selectedCards = new Map(); // evaluation_id → {resume_id, name, has_pdf, has_word}
+let selectedCards = new Map(); // evaluation_id → {resume_id, name}
 
-function toggleSel(evalId, resumeId, name, hasPdf, hasWord, ev) {
+function toggleSel(evalId, resumeId, name, ev) {
   ev.stopPropagation();
   if (selectedCards.has(evalId)) {
     selectedCards.delete(evalId);
   } else {
-    selectedCards.set(evalId, { resume_id: resumeId, name, has_pdf: hasPdf, has_word: hasWord });
+    selectedCards.set(evalId, { resume_id: resumeId, name });
   }
   const cb   = document.getElementById('sel-' + evalId);
   const card = document.getElementById('cc-'  + evalId);
@@ -756,7 +696,7 @@ function renderCard(c) {
     <div class="cc-head">
       <input type="checkbox" class="cc-chk" id="sel-${c.evaluation_id}"
              ${isSel?'checked':''}
-             onclick="toggleSel(${c.evaluation_id},${escHtml(JSON.stringify(c.resume_id))},${escHtml(JSON.stringify(c.name||'未知'))},${hasPdf},${hasWord},event)">
+             onclick="toggleSel(${c.evaluation_id},${escHtml(JSON.stringify(c.resume_id))},${escHtml(JSON.stringify(c.name||'未知'))},event)">
       <span class="cc-head-text" onclick="toggleCard(${c.evaluation_id})">
         <span class="cc-name">${c.name||'未知'}</span>
         <span class="cc-meta">${c.age||'?'}岁</span>
@@ -1252,168 +1192,5 @@ function showErrToast(e) {
   setTimeout(() => { if (t.parentNode) t.remove(); }, 12000);
 }
 
-// ── 清空所有数据 ──────────────────────────────────────
-function openClearAllModal() {
-  document.getElementById('clear-confirm-input').value = '';
-  document.getElementById('clear-all-modal').style.display = 'flex';
-}
-function closeClearAllModal() {
-  document.getElementById('clear-all-modal').style.display = 'none';
-}
-async function doCloseAll() {
-  const val = document.getElementById('clear-confirm-input').value.trim();
-  if (val !== 'DELETE') { alert('请输入 DELETE 确认'); return; }
-  closeClearAllModal();
-  try {
-    const r = await fetch('/api/data/clear_all', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({confirm:'CONFIRM_DELETE'}),
-    });
-    const d = await r.json();
-    if (d.ok) {
-      alert('已清空所有简历数据，页面将刷新');
-      location.reload();
-    } else {
-      alert('清空失败: ' + (d.message || JSON.stringify(d)));
-    }
-  } catch(e) {
-    alert('请求失败: ' + e);
-  }
-}
-
-// ── 下载面板 ───────────────────────────────────────────────────
-
-let _dlBrowserOpen = false; // 当前驾驶舱浏览器是否打开
-
-function openDlPanel() {
-  if (!selectedCards.size) return;
-
-  // 判断服务器本机浏览器是否打开（从设备列表获取）
-  fetch('/api/agent/list').then(r => r.json()).then(d => {
-    const srv = (d.devices || []).find(dev => dev.is_server);
-    _dlBrowserOpen = !!(srv && srv.browser_open);
-    _buildDlPanel();
-    $('dl-panel').style.display   = 'flex';
-    $('dl-overlay').style.display = 'block';
-  }).catch(() => {
-    _dlBrowserOpen = false;
-    _buildDlPanel();
-    $('dl-panel').style.display   = 'flex';
-    $('dl-overlay').style.display = 'block';
-  });
-}
-
-function closeDlPanel() {
-  $('dl-panel').style.display   = 'none';
-  $('dl-overlay').style.display = 'none';
-}
-
-function _buildDlPanel() {
-  const hasAnyMissing = [...selectedCards.values()].some(
-    c => !c.has_pdf || !c.has_word);
-
-  // 警告条（仅当有缺失文件且浏览器未打开时显示）
-  $('dl-browser-warn').style.display =
-    (hasAnyMissing && !_dlBrowserOpen) ? 'block' : 'none';
-
-  let html = '';
-  selectedCards.forEach((info, evalId) => {
-    const pdfOk  = info.has_pdf;
-    const wordOk = info.has_word;
-    const canOnline = _dlBrowserOpen;
-
-    const safeName = info.name.replace(/'/g, '');
-    const pdfBtn = pdfOk
-      ? `<button class="dl-btn dl-btn-ok"
-                 onclick="dlFile('${info.resume_id}','pdf',this,'${safeName}')">PDF</button>`
-      : canOnline
-        ? `<button class="dl-btn dl-btn-spin"
-                   onclick="dlFileOnline('${info.resume_id}','pdf',this,'${safeName}')">↓PDF</button>`
-        : `<button class="dl-btn dl-btn-off" disabled title="需先打开浏览器">PDF</button>`;
-
-    const wordBtn = wordOk
-      ? `<button class="dl-btn dl-btn-ok"
-                 onclick="dlFile('${info.resume_id}','word',this,'${safeName}')">Word</button>`
-      : canOnline
-        ? `<button class="dl-btn dl-btn-spin"
-                   onclick="dlFileOnline('${info.resume_id}','word',this,'${safeName}')">↓Word</button>`
-        : `<button class="dl-btn dl-btn-off" disabled title="需先打开浏览器">Word</button>`;
-
-    html += `
-    <div class="dl-item">
-      <span class="dl-item-name" title="${info.name}">${info.name}</span>
-      ${pdfBtn}
-      ${wordBtn}
-    </div>`;
-  });
-  $('dl-list').innerHTML = html;
-}
-
-function dlFile(resumeId, type, btn, name) {
-  // 直接下载已存储的文件
-  const a = document.createElement('a');
-  a.href = `/api/resume/download/${encodeURIComponent(resumeId)}/${type}`;
-  a.download = `${name}_${type === 'pdf' ? 'PDF.pdf' : 'Word.docx'}`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
-
-async function dlFileOnline(resumeId, type, btn, name) {
-  const orig = btn.textContent;
-  btn.textContent = '请求中…';
-  btn.disabled = true;
-  try {
-    const r = await fetch('/api/resume/download_online', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resume_id: resumeId, filetype: type }),
-    });
-    const d = await r.json();
-    if (!d.ok) {
-      alert(d.message || '在线下载失败，请确认浏览器已登录51job');
-      btn.textContent = orig; btn.disabled = false; return;
-    }
-    if (d.ready) {
-      // 文件已存在，直接下载
-      dlFile(resumeId, type, btn, name || resumeId);
-      _markBtnReady(btn, resumeId, type, name); return;
-    }
-    // 已排队：轮询等待文件就绪（最多 90 秒）
-    btn.textContent = '下载中…';
-    let attempts = 0;
-    const poll = setInterval(async () => {
-      attempts++;
-      try {
-        const info = await fetch('/api/resume/file_info', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ resume_ids: [resumeId] }),
-        }).then(r => r.json());
-        const ready = (info[type === 'pdf' ? 'pdf' : 'word'] || []).includes(resumeId);
-        if (ready) {
-          clearInterval(poll);
-          dlFile(resumeId, type, btn, name || resumeId);
-          _markBtnReady(btn, resumeId, type, name);
-        } else if (attempts >= 45) {
-          clearInterval(poll);
-          alert('下载超时，请确认设备已登录51job并重试');
-          btn.textContent = orig; btn.disabled = false;
-        }
-      } catch { clearInterval(poll); btn.textContent = orig; btn.disabled = false; }
-    }, 2000);
-  } catch (e) {
-    alert('请求失败：' + e.message);
-    btn.textContent = orig; btn.disabled = false;
-  }
-}
-
-function _markBtnReady(btn, resumeId, type, name) {
-  btn.className   = 'dl-btn dl-btn-ok';
-  btn.textContent = type === 'pdf' ? 'PDF' : 'Word';
-  btn.disabled    = false;
-  btn.onclick     = () => dlFile(resumeId, type, btn, name || resumeId);
-}
 </script>
 {% endblock %}

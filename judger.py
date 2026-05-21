@@ -1,9 +1,9 @@
 """
-判断模块（v2 版）
+判断模块（v3 版）
 ==============
-读取结构化简历 JSON，按岗位 prompt 进行评判。
+读取结构化简历 JSON，按岗位 prompt + 动态规则段进行评判。
 
-输出新格式：
+输出格式：
 {
   "thinking": "AI 内部推理过程（不展示给 HR，仅用于审计）",
   "符合": [{"条件": "压铸行业经验", "证据": "原文：『...』"}, ...],
@@ -14,10 +14,10 @@
 }
 
 判断逻辑：
-  1. Few-Shot 增强（≥3 个录用样本时）
-  2. Chain-of-Thought 双步推理：先逐条找原文证据，再汇总判定
-  3. 水分侦测：若职责描述全为虚词（负责/参与/跟进）无量化数据，
+  1. Chain-of-Thought 双步推理：先逐条找原文证据，再汇总判定
+  2. 水分侦测：若职责描述全为虚词（负责/参与/跟进）无量化数据，
      在 verdict_reason 末尾追加 [描述笼统]，不影响 verdict
+  3. 评判规则从 config_json.rules 动态渲染，job_prompt 只存上下文
 
 兼容旧格式（pros/cons）：validate_judgment 同时填充新旧字段。
 """
@@ -40,61 +40,6 @@ logger = logging.getLogger(__name__)
 
 
 VALID_VERDICTS = {"深绿", "蓝色", "黄色", "排除"}
-
-
-# =============================================================================
-# Few-Shot 学习增强
-# =============================================================================
-
-def build_few_shot_section(job_name, max_examples=5):
-    """
-    从已录用/已通过候选人中取最多5个，构建 Few-Shot 参考。
-    跳过 matches 为空的转移记录（质量低）。
-    """
-    all_examples = database.get_hired_candidates(job_name, limit=20)
-    # 过滤掉转移进来的空 matches 记录
-    examples = [e for e in all_examples
-                if e.get("matches_json") and e["matches_json"] != "[]"][:max_examples]
-    if not examples:
-        return ""
-
-    lines = [
-        "",
-        "# 历史录用案例（仅作背景参考）",
-        "",
-        "**重要约束**：以下是该岗位过去真正录用的候选人简要画像及符合原因。",
-        "仅供理解录用偏好，不能凌驾于岗位要求和评估细则之上。",
-        "",
-    ]
-    for i, ex in enumerate(examples, 1):
-        try:
-            structured = json.loads(ex["structured_json"]) if ex.get("structured_json") else {}
-        except Exception:
-            structured = {}
-        try:
-            matches = json.loads(ex["matches_json"]) if ex.get("matches_json") else []
-        except Exception:
-            matches = []
-        name = ex.get("name", "已录用候选人")
-        wh = structured.get("work_history", []) or []
-        years = structured.get("total_work_years", "?")
-        first_degree = structured.get("first_degree", "?")
-        english = structured.get("english_level", "?")
-        industries = structured.get("industry_tags", []) or []
-        roles = "、".join(
-            f"{w.get('company','?')}({w.get('role','')})"
-            for w in wh[:2] if isinstance(w, dict)
-        )
-        match_summary = "、".join(
-            m.get("条件", "") for m in matches[:3] if m.get("条件")
-        ) or "未记录"
-        lines.append(
-            f"- 案例{i}：{name} | {first_degree} | {years}年经验 | "
-            f"英语:{english} | 行业:{','.join(industries[:3]) or '未知'} | "
-            f"主要经历:{roles or '未明确'} | 录用主因:{match_summary}"
-        )
-    lines.append("")
-    return "\n".join(lines)
 
 
 def build_criteria_notes_section(job_name):
@@ -128,6 +73,62 @@ def build_criteria_notes_section(job_name):
 # =============================================================================
 # 判断 prompt 构建
 # =============================================================================
+
+_STRIP_SECTIONS = {"# 评判规则", "# 评判逻辑", "# 输出格式", "# 重要约束"}
+
+
+def _clean_job_prompt(prompt_text):
+    """从旧 prompt 中剥离遗留的 # 评判规则 / # 评判逻辑 / # 输出格式 / # 重要约束 段落。"""
+    if not prompt_text:
+        return ""
+    lines = prompt_text.split("\n")
+    result = []
+    skipping = False
+    for line in lines:
+        stripped = line.strip()
+        if any(stripped.startswith(h) for h in _STRIP_SECTIONS):
+            skipping = True
+            continue
+        if skipping and stripped.startswith("# ") and not stripped.startswith("## "):
+            skipping = False
+        if not skipping:
+            result.append(line)
+    return "\n".join(result).strip()
+
+
+def build_rules_section(job_name):
+    """从 config_json.rules 动态渲染评判规则段（含 evidence_hint）。"""
+    job = database.get_job(job_name)
+    if not job:
+        return ""
+    try:
+        config = json.loads(job.get("config_json") or "{}")
+    except Exception:
+        return ""
+    rules = config.get("rules", [])
+    if not rules:
+        return ""
+    type_tag = {"hard": "🔴 硬性", "soft": "🟡 软性", "bonus": "🟢 加分"}
+    lines = ["", "# 评判规则（按硬性 → 软性 → 加分顺序）", ""]
+    for i, r in enumerate(rules, 1):
+        name = r.get("name", "")
+        desc = r.get("description", "")
+        kind = r.get("type", "soft")
+        hint = (r.get("evidence_hint") or "").strip()
+        tag = type_tag.get(kind, "🟡 软性")
+        lines.append(f"## 规则{i}（{tag}）：{name}")
+        lines.append(desc)
+        if hint:
+            lines.append(f"*证据标准*：{hint}")
+        lines.append("")
+    lines.append("**评判逻辑**：")
+    lines.append("1. 检查所有硬性规则。任一硬性规则不通过 → has_hard_fail=true → verdict='排除'")
+    lines.append("2. 全部硬性规则通过后，检查软性规则：")
+    lines.append("   - 全部符合 → 深绿；1条轻微不足 → 蓝色；多条不足或边界情况 → 黄色")
+    lines.append("3. 加分规则只增加亮点，不影响主判定")
+    lines.append("")
+    return "\n".join(lines)
+
 
 OUTPUT_INSTRUCTION = """
 # 输出要求（严格执行）
@@ -181,12 +182,13 @@ OUTPUT_INSTRUCTION = """
 
 def build_judge_messages(structured_resume, job_prompt, job_name):
     """构建判断阶段的 LLM messages"""
-    few_shot = build_few_shot_section(job_name)
+    clean_prompt = _clean_job_prompt(job_prompt)
+    rules_section = build_rules_section(job_name)
     criteria_notes = build_criteria_notes_section(job_name)
 
-    system_prompt = f"""{job_prompt}
+    system_prompt = f"""{clean_prompt}
 
-{few_shot}
+{rules_section}
 
 {criteria_notes}
 

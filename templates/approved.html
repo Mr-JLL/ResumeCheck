@@ -95,6 +95,74 @@
 </div>
 <div id="import-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:1199"
      onclick="closeImportPanel()"></div>
+
+<!-- ══════════ 批量下载浮动工具栏 ══════════ -->
+<div class="apr-sel-toolbar" id="apr-sel-toolbar">
+  <span style="font-size:13px;flex-shrink:0">
+    已选 <b id="apr-sel-count">0</b> 人
+    <span id="apr-sel-hint" style="font-size:11px;opacity:.8;margin-left:4px"></span>
+  </span>
+  <button class="apr-dl-btn" id="apr-dl-pdf-btn" onclick="aprBatchDownload('pdf')">⬇ 文字版PDF</button>
+  <button class="apr-dl-btn" id="apr-dl-word-btn" onclick="aprBatchDownload('word')">⬇ Word文档</button>
+  <button class="apr-dl-btn apr-bg-btn" id="apr-bg-dl-btn" onclick="aprOpenBgDlModal()">☁ 后台下载到本地</button>
+  <button class="apr-cancel-btn" onclick="aprClearSel()">取消选择</button>
+</div>
+
+<!-- ══════════ 后台下载格式选择 Modal ══════════ -->
+<div id="bg-dl-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
+     z-index:1100;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;padding:26px 28px;width:380px;max-width:95vw;
+              box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="font-size:16px;font-weight:700;color:#2c3e50;margin-bottom:6px">后台下载到本地</div>
+    <div style="font-size:12px;color:#888;margin-bottom:18px">
+      使用已登录的浏览器自动访问51job并下载文件，下载期间可进行其他操作。
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:600;color:#555;margin-bottom:10px">选择下载格式</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;font-size:13px">
+        <input type="radio" name="bgfmt" value="pdf" style="accent-color:#27ae60"> 文字版PDF
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;font-size:13px">
+        <input type="radio" name="bgfmt" value="word" style="accent-color:#27ae60"> Word文档
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+        <input type="radio" name="bgfmt" value="both" checked style="accent-color:#27ae60"> 两者都要
+      </label>
+    </div>
+    <div id="bg-dl-est" style="font-size:12px;color:#999;margin-bottom:20px;
+         background:#f8f9fa;border-radius:6px;padding:8px 12px"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button onclick="closeBgDlModal()"
+              style="padding:8px 18px;border:1px solid #ccc;border-radius:6px;
+                     background:#f5f6fa;cursor:pointer;font-size:13px">取消</button>
+      <button onclick="aprStartBgDl()"
+              style="padding:8px 22px;border:none;border-radius:6px;
+                     background:#27ae60;color:#fff;cursor:pointer;font-size:13px;font-weight:700">
+        开始后台下载
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 后台下载进度徽章 ══════════ -->
+<div id="bg-dl-badge" style="display:none;position:fixed;top:80px;right:20px;
+     background:#2c3e50;color:#fff;border-radius:10px;padding:12px 16px;
+     font-size:13px;z-index:900;box-shadow:0 4px 20px rgba(0,0,0,.3);min-width:220px">
+  <div id="bg-dl-badge-main" style="margin-bottom:6px;font-weight:600"></div>
+  <div id="bg-dl-badge-sub" style="font-size:11px;color:#aaa;margin-bottom:10px"></div>
+  <div id="bg-dl-progress-bar" style="height:4px;background:rgba(255,255,255,.15);
+       border-radius:2px;overflow:hidden;margin-bottom:10px">
+    <div id="bg-dl-bar-fill" style="height:100%;background:#2ecc71;width:0%;transition:width .4s"></div>
+  </div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button id="bg-dl-cancel-btn" onclick="aprBgCancel()"
+            style="padding:3px 12px;border:1px solid rgba(255,255,255,.3);border-radius:4px;
+                   background:transparent;color:#fff;font-size:11px;cursor:pointer">取消</button>
+    <button id="bg-dl-close-btn" onclick="closeBgDlBadge()"
+            style="display:none;padding:3px 12px;border:1px solid rgba(255,255,255,.3);
+                   border-radius:4px;background:transparent;color:#fff;font-size:11px;cursor:pointer">关闭</button>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -189,6 +257,24 @@
 .ev-list.neg{color:#c0392b}
 .ev-list li{margin:2px 0}
 .ac-reason{font-size:11px;color:#777;margin-top:4px;font-style:italic}
+
+/* ── 多选 ── */
+.ac-chk{width:14px;height:14px;cursor:pointer;flex-shrink:0;accent-color:#27ae60;margin:0}
+.ac-selected{box-shadow:0 0 0 2px rgba(39,174,96,.45)!important;border-color:#27ae60!important}
+
+/* ── 浮动工具栏 ── */
+.apr-sel-toolbar{
+  display:none;position:fixed;bottom:0;left:0;right:0;
+  background:#1e8449;color:#fff;padding:10px 20px;z-index:800;
+  align-items:center;gap:12px;box-shadow:0 -2px 12px rgba(0,0,0,.25);flex-wrap:wrap}
+.apr-dl-btn{padding:6px 16px;border:none;border-radius:5px;
+            background:#fff;color:#1e8449;font-size:13px;font-weight:700;cursor:pointer}
+.apr-dl-btn:hover{background:#e8f8f0}
+.apr-dl-btn:disabled{opacity:.5;cursor:default}
+.apr-cancel-btn{padding:6px 12px;border:1px solid rgba(255,255,255,.5);border-radius:5px;
+                background:transparent;color:#fff;font-size:12px;cursor:pointer}
+.apr-bg-btn{background:#2c3e50!important;color:#fff!important}
+.apr-bg-btn:hover{background:#34495e!important}
 </style>
 
 <script>
@@ -279,9 +365,13 @@ function renderCard(c) {
 
   const ddBtnText = stages.length ? stages.join('、') : '选择阶段';
 
+  const isSel = aprSelected.has(c.evaluation_id);
   return `
-  <div class="ac ${c.verdict}" id="ac-${c.evaluation_id}">
+  <div class="ac ${c.verdict}${isSel?' ac-selected':''}" id="ac-${c.evaluation_id}">
     <div class="ac-head">
+      <input type="checkbox" class="ac-chk" id="acchk-${c.evaluation_id}"
+             ${isSel?'checked':''}
+             onclick="aprToggleSel(${c.evaluation_id},event)">
       <span class="ac-info" onclick="toggleCard(${c.evaluation_id})">
         <span class="ac-name">${c.name||'未知'}</span>
         <span class="ac-meta">${c.age||'?'}岁</span>
@@ -501,8 +591,283 @@ function applyDateFilter() {
   window.location.href = url;
 }
 
+// ── 多选状态 ─────────────────────────────────────────────────
+// Map<evaluation_id, {resume_id, name, has_pdf, has_word}>
+let aprSelected = new Map();
+
 // 初始化
 renderAll();
+
+function aprToggleSel(evalId, ev) {
+  ev.stopPropagation();
+  if (aprSelected.has(evalId)) {
+    aprSelected.delete(evalId);
+  } else {
+    const c = candidates.find(x => x.evaluation_id === evalId);
+    if (!c) return;
+    aprSelected.set(evalId, { resume_id: c.resume_id, name: c.name || '未知', has_pdf: !!c.has_pdf, has_word: !!c.has_word });
+  }
+  const cb   = document.getElementById('acchk-' + evalId);
+  const card = document.getElementById('ac-' + evalId);
+  if (cb)   cb.checked = aprSelected.has(evalId);
+  if (card) card.classList.toggle('ac-selected', aprSelected.has(evalId));
+  aprUpdateToolbar();
+}
+
+function aprClearSel() {
+  aprSelected.forEach((_, id) => {
+    const cb   = document.getElementById('acchk-' + id);
+    const card = document.getElementById('ac-' + id);
+    if (cb)   cb.checked = false;
+    if (card) card.classList.remove('ac-selected');
+  });
+  aprSelected.clear();
+  aprUpdateToolbar();
+}
+
+function aprUpdateToolbar() {
+  const n       = aprSelected.size;
+  const toolbar = document.getElementById('apr-sel-toolbar');
+  toolbar.style.display = n > 0 ? 'flex' : 'none';
+  document.getElementById('apr-sel-count').textContent = n;
+
+  const pdfCount  = [...aprSelected.values()].filter(v => v.has_pdf).length;
+  const wordCount = [...aprSelected.values()].filter(v => v.has_word).length;
+  document.getElementById('apr-sel-hint').textContent =
+    `（PDF可下载 ${pdfCount} 人，Word可下载 ${wordCount} 人）`;
+
+  document.getElementById('apr-dl-pdf-btn').disabled  = pdfCount  === 0;
+  document.getElementById('apr-dl-word-btn').disabled = wordCount === 0;
+}
+
+// ── 批量下载 ─────────────────────────────────────────────────
+async function aprBatchDownload(filetype) {
+  const vals       = [...aprSelected.values()];
+  const available  = vals.filter(v => filetype === 'pdf' ? v.has_pdf : v.has_word);
+  const total      = aprSelected.size;
+  const typeLabel  = filetype === 'pdf' ? '文字版PDF' : 'Word文档';
+
+  if (!available.length) {
+    alert(`所选 ${total} 人中无可下载的${typeLabel}文件。`);
+    return;
+  }
+
+  // 攻击2A修正：下载前告知用户实际可下载数量
+  const msg = available.length < total
+    ? `已选 ${total} 人，其中 ${available.length} 人有${typeLabel}文件（${total - available.length} 人无本地文件将跳过）。\n确认下载 ${available.length} 份？`
+    : `将下载 ${available.length} 份${typeLabel}文件，确认？`;
+  if (!confirm(msg)) return;
+
+  const btn = filetype === 'pdf'
+    ? document.getElementById('apr-dl-pdf-btn')
+    : document.getElementById('apr-dl-word-btn');
+  btn.disabled    = true;
+  btn.textContent = '打包中…';
+
+  try {
+    const items = [...aprSelected.values()].map(v => ({
+      resume_id: v.resume_id,
+      name: v.name,
+    }));
+    const res = await fetch('/api/batch_download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, filetype, job_name: JOB }),
+    });
+
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      alert(d.message || `下载失败（HTTP ${res.status}）`);
+      return;
+    }
+
+    // 触发文件保存
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    const disp = res.headers.get('Content-Disposition') || '';
+    const match = disp.match(/filename\*?=(?:UTF-8'')?["']?([^"';\r\n]+)/i);
+    a.download = match ? decodeURIComponent(match[1]) : `简历_${typeLabel}.zip`;
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('下载请求失败：' + e.message);
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = filetype === 'pdf' ? '⬇ 文字版PDF' : '⬇ Word文档';
+  }
+}
+
+// ── 后台下载 ─────────────────────────────────────────────────
+let _bgDlPolling = null;
+
+function aprOpenBgDlModal() {
+  const n = aprSelected.size;
+  if (!n) return;
+  const fmt = document.querySelector('input[name="bgfmt"]:checked')?.value || 'both';
+  const fmtFactor = fmt === 'both' ? 2 : 1;
+  const estSec = Math.ceil(n * 20 * fmtFactor);  // ~20秒/人/格式（含导航+下载等待）
+  const estMin = Math.ceil(estSec / 60);
+  document.getElementById('bg-dl-est').textContent =
+    `共 ${n} 人，预计约 ${estMin > 1 ? estMin + ' 分钟' : estSec + ' 秒'}` +
+    `（文件已存在的将自动跳过）`;
+  document.getElementById('bg-dl-modal').style.display = 'flex';
+}
+
+function closeBgDlModal() {
+  document.getElementById('bg-dl-modal').style.display = 'none';
+}
+
+// 重新计算预计时间（格式切换时更新）
+document.querySelectorAll('input[name="bgfmt"]').forEach(r => {
+  r.addEventListener('change', () => {
+    const n = aprSelected.size;
+    if (!n) return;
+    const fmt = r.value;
+    const fmtFactor = fmt === 'both' ? 2 : 1;
+    const estSec = Math.ceil(n * 20 * fmtFactor);
+    const estMin = Math.ceil(estSec / 60);
+    document.getElementById('bg-dl-est').textContent =
+      `共 ${n} 人，预计约 ${estMin > 1 ? estMin + ' 分钟' : estSec + ' 秒'}` +
+      `（文件已存在的将自动跳过）`;
+  });
+});
+
+async function aprStartBgDl() {
+  const fmt = document.querySelector('input[name="bgfmt"]:checked')?.value || 'both';
+  const items = [...aprSelected.values()].map(v => ({
+    resume_id: v.resume_id,
+    name: v.name,
+  }));
+  closeBgDlModal();
+
+  try {
+    const res = await fetch('/api/resume/bg_download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items, filetype: fmt, job_name: JOB }),
+    });
+    const d = await res.json();
+    if (!d.ok) { alert(d.message); return; }
+    aprClearSel();
+    _startBgDlPolling();
+  } catch (e) {
+    alert('启动后台下载失败：' + e.message);
+  }
+}
+
+function _startBgDlPolling() {
+  if (_bgDlPolling) clearInterval(_bgDlPolling);
+  document.getElementById('bg-dl-badge').style.display = 'block';
+  document.getElementById('bg-dl-cancel-btn').style.display = '';
+  document.getElementById('bg-dl-close-btn').style.display  = 'none';
+  _pollBgDlStatus();
+  _bgDlPolling = setInterval(_pollBgDlStatus, 2000);
+}
+
+function closeBgDlBadge() {
+  document.getElementById('bg-dl-badge').style.display = 'none';
+  if (_bgDlPolling) { clearInterval(_bgDlPolling); _bgDlPolling = null; }
+}
+
+async function _pollBgDlStatus() {
+  try {
+    const r  = await fetch('/api/resume/bg_status');
+    const d  = await r.json();
+    if (!d.ok) return;
+
+    const mainEl = document.getElementById('bg-dl-badge-main');
+    const subEl  = document.getElementById('bg-dl-badge-sub');
+    const fill   = document.getElementById('bg-dl-bar-fill');
+    const pct    = d.total > 0 ? Math.round(d.done / d.total * 100) : 0;
+    fill.style.width = pct + '%';
+
+    if (d.state === 'running') {
+      mainEl.textContent = `下载中 ${d.done}/${d.total}`;
+      subEl.textContent  = d.current_name ? `当前：${d.current_name}` : '';
+    } else if (d.state === 'done') {
+      _stopBgDlPolling();
+      mainEl.textContent = `✓ 下载完成 ${d.done} 份`;
+      const parts = [];
+      if (d.failed)      parts.push(`${d.failed} 份无法从51job获取`);
+      if (d.conv_failed) parts.push(`${d.conv_failed} 份PDF→Word转换失败（请运行 pip install pdf2docx）`);
+      subEl.textContent  = parts.length ? parts.join('；') : '全部成功';
+      fill.style.width   = '100%';
+      document.getElementById('bg-dl-cancel-btn').style.display = 'none';
+      document.getElementById('bg-dl-close-btn').style.display  = '';
+      await _refreshFileFlags();
+      renderAll();
+    } else if (d.state === 'cancelled') {
+      _stopBgDlPolling();
+      mainEl.textContent = `已取消（完成 ${d.done}/${d.total}）`;
+      subEl.textContent  = '';
+      document.getElementById('bg-dl-cancel-btn').style.display = 'none';
+      document.getElementById('bg-dl-close-btn').style.display  = '';
+      await _refreshFileFlags();
+      renderAll();
+    } else if (d.state === 'error') {
+      _stopBgDlPolling();
+      mainEl.textContent = '下载出错';
+      subEl.textContent  = d.error || '未知错误';
+      document.getElementById('bg-dl-cancel-btn').style.display = 'none';
+      document.getElementById('bg-dl-close-btn').style.display  = '';
+    } else if (d.state === 'idle') {
+      _stopBgDlPolling();
+      document.getElementById('bg-dl-badge').style.display = 'none';
+    }
+  } catch (_) {}
+}
+
+function _stopBgDlPolling() {
+  if (_bgDlPolling) { clearInterval(_bgDlPolling); _bgDlPolling = null; }
+}
+
+async function aprBgCancel() {
+  try {
+    await fetch('/api/resume/bg_cancel', { method: 'POST' });
+  } catch(_) {}
+}
+
+async function _refreshFileFlags() {
+  const rids = candidates.map(c => c.resume_id);
+  if (!rids.length) return;
+  try {
+    const r = await fetch('/api/resume/file_info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume_ids: rids }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const pdfSet  = new Set(d.pdf);
+      const wordSet = new Set(d.word);
+      candidates.forEach(c => {
+        c.has_pdf  = pdfSet.has(c.resume_id);
+        c.has_word = wordSet.has(c.resume_id);
+      });
+      // 同步更新已选中的 Map
+      aprSelected.forEach((val, evalId) => {
+        const c = candidates.find(x => x.evaluation_id === evalId);
+        if (c) { val.has_pdf = c.has_pdf; val.has_word = c.has_word; }
+      });
+      aprUpdateToolbar();
+    }
+  } catch (_) {}
+}
+
+// 页面加载时恢复进行中的下载（用户曾跳转到其他页面后返回）
+(async () => {
+  try {
+    const r = await fetch('/api/resume/bg_status');
+    const d = await r.json();
+    if (d.ok && d.state === 'running') {
+      _startBgDlPolling();
+    }
+  } catch (_) {}
+})();
 
 // ── 导入面板 ──────────────────────────────────────────────
 let _importFiles = [];
