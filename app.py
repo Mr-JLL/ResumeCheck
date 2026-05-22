@@ -38,6 +38,7 @@ import learning
 import llm_utils
 import init_jobs
 import ranker
+from browser_utils import _find_edge_exe, _write_profile_prefs, _snapshot_dir, _wait_for_new_file
 
 try:
     import file_parser
@@ -111,47 +112,6 @@ def _prewarm_driver():
 
 
 _prewarm_driver()
-
-
-def _find_edge_exe():
-    """查找本机 Edge 可执行文件路径（Windows）"""
-    candidates = [
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
-    try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
-        )
-        val = winreg.QueryValue(key, None)
-        if val and os.path.exists(val):
-            return val
-    except Exception:
-        pass
-    return None
-
-
-def _write_profile_prefs(profile_dir, download_dir):
-    """首次创建 Edge Profile 时写入下载偏好，避免每次 PDF 弹出另存对话框"""
-    pref_path = os.path.join(profile_dir, "Default", "Preferences")
-    if not os.path.exists(pref_path):
-        os.makedirs(os.path.dirname(pref_path), exist_ok=True)
-        prefs = {
-            "download": {
-                "default_directory": download_dir.replace("\\", "/"),
-                "prompt_for_download": False,
-                "directory_upgrade": True,
-            },
-            "plugins": {"always_open_pdf_externally": True},
-            "safebrowsing": {"enabled": False},
-        }
-        with open(pref_path, "w", encoding="utf-8") as f:
-            json.dump(prefs, f)
 
 
 def _browser_is_open():
@@ -542,24 +502,6 @@ def _check_resume_files(resume_ids):
         if os.path.exists(os.path.join(FILES_DIR, rid + ".docx")):
             has_word.add(rid)
     return has_pdf, has_word
-
-
-def _snapshot_dir(directory):
-    return set(glob.glob(os.path.join(directory, "*")))
-
-
-def _wait_for_new_file(directory, before_set, timeout=15):
-    """等待 directory 里出现新的完整下载文件，返回路径或 None"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        current = set(glob.glob(os.path.join(directory, "*")))
-        new_files = current - before_set
-        complete = [f for f in new_files
-                    if not f.endswith(".crdownload") and not f.endswith(".tmp")]
-        if complete:
-            return complete[0]
-        time.sleep(0.8)
-    return None
 
 
 def _extract_browser_auth(drv):
