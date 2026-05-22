@@ -42,6 +42,9 @@
           <input type="range" min="0" max="100" id="w-stability" value="{{ default_weights.stability }}">
         </label>
         <button class="btn btn-primary btn-apply-weights" id="btn-apply-weights">应用排序</button>
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;margin-top:6px;">
+          <input type="checkbox" id="chk-approved-only"> 仅显示已通过（与通过页同序）
+        </label>
       </div>
     </details>
 
@@ -55,7 +58,7 @@
 
     <div id="left-content" style="display:none;">
       <div class="triage-id">
-        <span id="cand-name" class="cand-name">姓名</span>
+        <span id="cand-name" class="cand-name" title="双击编辑姓名" style="cursor:text">姓名</span>
         <span id="cand-verdict" class="verdict-badge"></span>
       </div>
       <div class="cand-basic">
@@ -129,22 +132,18 @@
         <ul id="similar-list" class="similar-list"></ul>
       </div>
 
-      <!-- AI 参考依据面板：Few-Shot 案例 + 已确认偏好 -->
+      <!-- AI 参考依据面板：已确认评估细则 -->
       <details id="ai-ref-panel" style="margin-top:12px;font-size:12px;border:1px solid #e0e0e0;border-radius:8px;padding:0;">
         <summary style="padding:8px 12px;cursor:pointer;font-weight:600;color:#555;list-style:none;display:flex;align-items:center;gap:6px;user-select:none;">
-          <span>📚</span><span>本次 AI 参考了哪些依据</span>
+          <span>📋</span><span>本次 AI 参考了哪些依据</span>
           <span id="ai-ref-badge" style="background:#3498db;color:#fff;border-radius:10px;padding:1px 7px;font-size:11px;margin-left:4px;display:none;"></span>
         </summary>
         <div style="padding:10px 12px 12px;">
-          <div id="few-shot-section" style="display:none;margin-bottom:10px;">
-            <div style="font-weight:600;color:#27ae60;margin-bottom:6px;">🏆 历史录用参考案例</div>
-            <ul id="few-shot-list" style="margin:0;padding:0 0 0 14px;color:#555;line-height:1.8;"></ul>
-          </div>
           <div id="criteria-section" style="display:none;">
             <div style="font-weight:600;color:#8e44ad;margin-bottom:6px;">📋 该岗位已确认评估细则</div>
             <ul id="criteria-list" style="margin:0;padding:0 0 0 14px;color:#555;line-height:1.8;"></ul>
           </div>
-          <div id="ai-ref-empty" style="color:#aaa;font-size:11px;">暂无录用案例或已确认细则，AI 将仅依据岗位规则判断。</div>
+          <div id="ai-ref-empty" style="color:#aaa;font-size:11px;">暂无已确认细则，AI 将仅依据岗位规则判断。</div>
         </div>
       </details>
     </div>
@@ -250,7 +249,11 @@
   </aside>
 
   <!-- 右栏：完整简历 HTML 内嵌 -->
-  <section class="triage-right">
+  <section class="triage-right" style="position:relative;">
+    <a id="pdf-link" href="#" target="_blank" rel="noopener noreferrer"
+       style="display:none;position:absolute;top:8px;right:12px;z-index:10;
+              background:#e74c3c;color:#fff;padding:4px 10px;border-radius:4px;
+              font-size:13px;text-decoration:none;">📄 查看原始PDF</a>
     <iframe id="resume-iframe" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
   </section>
 </div>
@@ -264,8 +267,9 @@ let candidates = [];
 let idx = 0;
 let isInputFocused = false;
 let _showTime = null;
-let _fewShotCases = [];
 let _criteriaDetails = [];
+let _hardCondNames = new Set();
+let _stageOrder = [];
 
 function $(id){ return document.getElementById(id); }
 
@@ -288,44 +292,86 @@ document.querySelectorAll("input[type=range]").forEach(r=>{
 $("btn-apply-weights").addEventListener("click", ()=>{
   loadList();
 });
+$("chk-approved-only").addEventListener("change", () => { loadList(); });
+
+// ── 按通过页顺序排序 ─────────────────────────────────────
+const _DECISIVE     = new Set(['approved','hired','disapproved','rejected']);
+const _APPROVED_SET = new Set(['approved','hired']);
+const _REJECTED_SET = new Set(['disapproved','rejected']);
+
+function _getGroupIdx(c) {
+  const action = c.latest_action;
+  if (!action || !_DECISIVE.has(action)) return -1;          // 待处理：最前
+  if (_REJECTED_SET.has(action)) return _stageOrder.length + 1; // 已排除：最后
+  // 已通过：按 HR 阶段
+  const stages = c.hr_stages || [];
+  if (!stages.length) return 0;                              // 通过·无标签
+  for (let i = 0; i < _stageOrder.length; i++) {
+    if (stages.includes(_stageOrder[i])) return i + 1;
+  }
+  return 0;                                                  // 未知阶段 → 无标签组
+}
+
+function _getGroupName(grpIdx) {
+  if (grpIdx === -1) return '待处理';
+  if (grpIdx === 0)  return '通过·未分配';
+  if (grpIdx <= _stageOrder.length) return _stageOrder[grpIdx - 1];
+  return '已排除';
+}
+
+function sortByApprovedOrder(list) {
+  list.forEach((c, i) => { c._origIdx = i; });
+  return [...list].sort((a, b) => {
+    const ai = _getGroupIdx(a), bi = _getGroupIdx(b);
+    if (ai !== bi) return ai - bi;
+    // 待处理组 / 已排除组：保留服务端排名顺序
+    if (ai === -1 || ai === _stageOrder.length + 1) return a._origIdx - b._origIdx;
+    // 拒绝阶段：先按拒绝原因字母序，再 decision_at DESC
+    if (_stageOrder[ai - 1] === '拒绝') {
+      const rr = (a.hr_reject_reason || '').localeCompare(b.hr_reject_reason || '');
+      if (rr !== 0) return rr;
+    }
+    // 其他已通过组：decision_at DESC（与通过页 action_at DESC 对齐）
+    const da = a.decision_at || '', db = b.decision_at || '';
+    if (da !== db) return da > db ? -1 : 1;
+    // 三级兜底：evaluation_id DESC（与通过页 id DESC 对齐）
+    return b.evaluation_id - a.evaluation_id;
+  });
+}
+
+function _getCurrentGroupInfo() {
+  if (!candidates.length) return { name: '', pos: 0, total: 0 };
+  const c = candidates[idx];
+  const grpIdx = _getGroupIdx(c);
+  const name = _getGroupName(grpIdx);
+  const grpCands = candidates.filter(x => _getGroupIdx(x) === grpIdx);
+  const pos = grpCands.findIndex(x => x.evaluation_id === c.evaluation_id) + 1;
+  return { name, pos, total: grpCands.length };
+}
 
 function renderAiRefPanel(){
-  const fsSection = $("few-shot-section");
-  const fsList = $("few-shot-list");
   const criteriaSection = $("criteria-section");
   const criteriaListEl = $("criteria-list");
   const emptyMsg = $("ai-ref-empty");
   const badge = $("ai-ref-badge");
 
-  const totalCount = _fewShotCases.length + _criteriaDetails.length;
-  if (totalCount === 0){
-    fsSection.style.display = "none";
+  if (_criteriaDetails.length === 0){
     criteriaSection.style.display = "none";
     emptyMsg.style.display = "block";
     badge.style.display = "none";
     return;
   }
   emptyMsg.style.display = "none";
-  badge.textContent = totalCount;
+  badge.textContent = _criteriaDetails.length;
   badge.style.display = "inline";
 
-  if (_fewShotCases.length > 0){
-    fsSection.style.display = "block";
-    fsList.innerHTML = _fewShotCases.map(ex => {
-      const roles = (ex.recent_roles || []).join(" → ") || "未明确";
-      const inds = (ex.industries || []).join(",") || "未知";
-      return `<li><b>${escapeHtml(ex.name)}</b> · ${escapeHtml(ex.first_degree)} · ${escapeHtml(String(ex.total_years))}年 · 英语:${escapeHtml(ex.english_level)} · 行业:${escapeHtml(inds)} · ${escapeHtml(roles)}</li>`;
-    }).join("");
-  } else {
-    fsSection.style.display = "none";
-  }
-
-  if (_criteriaDetails.length > 0){
+  // 硬性条件已由 prefilter 保证通过，AI 参考面板只展示软性细则
+  const softCriteria = _criteriaDetails.filter(n => !n.is_hard);
+  if (softCriteria.length > 0){
     criteriaSection.style.display = "block";
-    criteriaListEl.innerHTML = _criteriaDetails.map(n => {
-      const hardLabel = n.is_hard ? '<span style="color:#e74c3c;font-weight:700">[硬性] </span>' : '';
-      return `<li>${hardLabel}<b>${escapeHtml(n.condition_name)}</b>：${escapeHtml(n.note_text)}</li>`;
-    }).join("");
+    criteriaListEl.innerHTML = softCriteria.map(n =>
+      `<li><b>${escapeHtml(n.condition_name)}</b>：${escapeHtml(n.note_text)}</li>`
+    ).join("");
   } else {
     criteriaSection.style.display = "none";
   }
@@ -345,8 +391,15 @@ async function loadList(){
     return;
   }
   candidates = d.candidates || [];
-  _fewShotCases = d.few_shot_cases || [];
+  _stageOrder = d.stage_order || [];
   _criteriaDetails = d.criteria_notes || [];
+  _hardCondNames = new Set((d.hard_condition_names || []).map(s => s.trim()));
+  // 仅显示已通过（去除待处理和已排除候选人）
+  if ($("chk-approved-only").checked) {
+    candidates = candidates.filter(c => _APPROVED_SET.has(c.latest_action));
+  }
+  // 按通过页顺序排序
+  candidates = sortByApprovedOrder(candidates);
   renderAiRefPanel();
   if (candidates.length === 0){
     $("left-loading").textContent = "本岗位暂无待处理候选人。";
@@ -373,7 +426,12 @@ function updateCounter(){
   const handled = candidates.filter(c =>
     c.latest_action === "approved" || c.latest_action === "disapproved"
     || c.latest_action === "hired" || c.latest_action === "rejected").length;
-  $("triage-counter").textContent = `共 ${total} 份 · 已处理 ${handled} · 当前 ${total>0?idx+1:0}/${total}`;
+  let grpPart = '';
+  if (total > 0 && _stageOrder.length > 0) {
+    const { name, pos, total: grpTotal } = _getCurrentGroupInfo();
+    grpPart = ` · ${name} ${pos}/${grpTotal}`;
+  }
+  $("triage-counter").textContent = `共 ${total} 份 · 已处理 ${handled} · 当前 ${total>0?idx+1:0}/${total}${grpPart}`;
 }
 
 function show(){
@@ -416,8 +474,8 @@ function show(){
 
   const reason = c.verdict_reason || "";
 
-  // 符合 / 不符合
-  const matches = c.matches || [];
+  // 符合 / 不符合（过滤硬性条件：已通过 AI 筛选则硬性条件必然符合，展示无意义）
+  const matches = (c.matches || []).filter(m => !_hardCondNames.has((m["条件"]||"").trim()));
   const ml = $("cand-matches");
   ml.innerHTML = matches.length === 0
     ? `<li class="empty-line">（AI 未找到明确符合项）</li>`
@@ -427,7 +485,7 @@ function show(){
         return `<li><b>${escapeHtml(cond)}</b>${cond&&ev?"：":""}<span class="evidence-text">${escapeHtml(ev)}</span></li>`;
       }).join("");
 
-  const mismatches = c.mismatches || [];
+  const mismatches = (c.mismatches || []).filter(m => !_hardCondNames.has((m["条件"]||"").trim()));
   const xl = $("cand-mismatches");
   xl.innerHTML = mismatches.length === 0
     ? `<li class="empty-line">（无不符合项）</li>`
@@ -456,15 +514,19 @@ function show(){
   // 关闭相似面板
   $("similar-panel").style.display = "none";
 
-  // 加载右栏简历：有 PDF 则直接内嵌原始文件，否则回退到提取的 HTML
+  // 加载右栏简历：始终使用 HTML 视图（避免 sandboxed iframe 阻止 PDF）
+  const pdfLink = $("pdf-link");
   if (c.resume_id) {
+    $("resume-iframe").src = `/api/resume_html/${encodeURIComponent(c.resume_id)}`;
     if (c.has_pdf) {
-      $("resume-iframe").src = `/api/resume/view/${encodeURIComponent(c.resume_id)}/pdf`;
+      pdfLink.href = `/api/resume/view/${encodeURIComponent(c.resume_id)}/pdf`;
+      pdfLink.style.display = "";
     } else {
-      $("resume-iframe").src = `/api/resume_html/${encodeURIComponent(c.resume_id)}`;
+      pdfLink.style.display = "none";
     }
   } else {
     $("resume-iframe").src = "about:blank";
+    pdfLink.style.display = "none";
   }
 
   updateCounter();
@@ -526,20 +588,6 @@ function renderQuickCard(c) {
     span.style.cssText = "background:#fde8e8;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600";
     chips.appendChild(span);
   });
-
-  // 与录用者相似度
-  const simEl = document.getElementById("qc-sim");
-  if (simEl) simEl.remove();
-  if (c.hired_similarity != null) {
-    const pct = Math.max(0, Math.min(100, c.hired_similarity));
-    const filled = Math.round(pct / 20);
-    const bar = "█".repeat(filled) + "░".repeat(5 - filled);
-    const simSpan = document.createElement("div");
-    simSpan.id = "qc-sim";
-    simSpan.style.cssText = "font-size:11px;color:#666;margin-top:6px";
-    simSpan.innerHTML = `与录用者相似 <span style="font-family:monospace;color:${pct>=60?'#27ae60':pct>=40?'#e67e22':'#aaa'}">${bar}</span> <b>${pct}%</b>`;
-    chips.after(simSpan);
-  }
 
   // 边框颜色跟随 verdict
   const colors = {"深绿":"#27ae60","蓝色":"#3498db","黄色":"#f39c12","排除":"#e74c3c"};
@@ -870,6 +918,65 @@ $("pool-modal").addEventListener("click", e => {
   }
 });
 
+// ── 处理台姓名内联编辑（contenteditable，span 不离开 DOM）────
+function startEditTriageName() {
+  const c = candidates[idx];
+  if (!c) return;
+  const nameEl = $("cand-name");
+  if (!nameEl || nameEl.contentEditable === 'true') return;
+  const original = nameEl.textContent;
+
+  nameEl.contentEditable = 'true';
+  nameEl.style.cssText += ';border:1px solid #3498db;border-radius:3px;' +
+    'padding:1px 6px;outline:none;min-width:60px';
+  isInputFocused = true;
+  nameEl.focus();
+  // 全选文字
+  const sel = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(nameEl);
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  const stopEdit = async (cancel) => {
+    if (nameEl.contentEditable !== 'true') return; // 防止重复触发
+    nameEl.contentEditable = 'false';
+    nameEl.style.border = '';
+    nameEl.style.padding = '';
+    nameEl.style.outline = '';
+    isInputFocused = false;
+    nameEl.removeEventListener('keydown', onKD);
+    nameEl.removeEventListener('blur',    onBlur);
+    const newName = (nameEl.textContent || '').trim();
+    if (cancel || !newName || newName === original) {
+      nameEl.textContent = original;
+      return;
+    }
+    c.name = newName;
+    const res = await fetch('/api/candidate/rename', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({resume_id: c.resume_id, new_name: newName})
+    });
+    const d = await res.json();
+    if (!d.ok) {
+      c.name = original;
+      nameEl.textContent = original;
+      alert('保存失败：' + (d.message || ''));
+    }
+  };
+
+  const onKD = ev => {
+    if (ev.key === 'Enter')  { ev.preventDefault(); stopEdit(false); }
+    if (ev.key === 'Escape') { ev.preventDefault(); stopEdit(true);  }
+  };
+  const onBlur = () => stopEdit(false);
+  nameEl.addEventListener('keydown', onKD);
+  nameEl.addEventListener('blur',    onBlur);
+}
+
+$("cand-name").addEventListener('dblclick', startEditTriageName);
+
 // 启动
 loadList();
 loadTransferJobs();
@@ -879,7 +986,7 @@ loadTransferJobs();
   const iframe = $('resume-iframe');
   iframe.addEventListener('load', function() {
     const src = iframe.src || '';
-    if (!src || src === 'about:blank' || src.includes('/pdf')) return;
+    if (!src || src === 'about:blank') return;
     try {
       const doc = iframe.contentDocument;
       if (!doc || !doc.body) return;

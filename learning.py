@@ -2,7 +2,6 @@
 学习系统 v2
 ==========
 阶段1：outcome 日志统计
-阶段2：Few-Shot 案例库总览
 阶段3：特征-结果相关性分析
 阶段4：招聘漏斗健康度看板（每岗位漏斗+预警）
 阶段5：市场稀缺性分析（哪个条件最难满足）
@@ -79,29 +78,6 @@ def stage1_outcome_summary(job_name=None):
     verdict_order = {"深绿": 0, "蓝色": 1, "黄色": 2, "排除": 3}
     out.sort(key=lambda x: (verdict_order.get(x["verdict"], 99), -x["cnt"]))
     return out
-
-
-# =============================================================================
-# 阶段2：Few-Shot 案例库总览
-# =============================================================================
-
-def stage2_hire_summary():
-    """approved 与 hired 都计入"""
-    with database.get_conn() as conn:
-        rows = conn.execute("""
-            SELECT j.name, COUNT(DISTINCT o.id) AS cnt
-            FROM outcomes o
-            JOIN evaluations e ON o.evaluation_id = e.id
-            JOIN jobs j ON e.job_id = j.id
-            WHERE o.action IN ('hired', 'approved')
-            GROUP BY j.name
-            ORDER BY cnt DESC
-        """).fetchall()
-    job_list = [{"name": r["name"], "count": r["cnt"]} for r in rows]
-    return {
-        "total_hired": sum(j["count"] for j in job_list),
-        "jobs": job_list,
-    }
 
 
 # =============================================================================
@@ -592,7 +568,6 @@ def get_learning_page_data():
             return _CACHE["data"]
 
     outcome_rows = stage1_outcome_summary()
-    hire_summary = stage2_hire_summary()
     corr = stage3_correlation()
     correlation_html = render_correlation_html(corr) if corr else None
     rejection_tags = stage7_rejection_tags()
@@ -602,7 +577,6 @@ def get_learning_page_data():
 
     data = {
         "outcome_rows": outcome_rows,
-        "hire_summary": hire_summary,
         "correlation": correlation_html,
         "total_samples": total,
         "rejection_tags": rejection_tags,

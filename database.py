@@ -1586,10 +1586,19 @@ def _eval_base_sql():
 
 
 def list_approved_for_job(job_name, date_from=None, date_to=None):
-    """返回该岗位所有通过（approved/hired）的候选人，按决定时间倒序。"""
+    """返回该岗位最终状态为通过（approved/hired）的候选人，按决定时间倒序。
+    每个 evaluation 只取一行：最近的 approved/hired outcome，且其后无更晚的决定性操作。
+    """
     with get_conn() as conn:
         sql = _eval_base_sql() + """
-            WHERE j.name = ? AND o.action IN ('approved', 'hired')
+            WHERE j.name = ?
+              AND o.action IN ('approved', 'hired')
+              AND NOT EXISTS (
+                SELECT 1 FROM outcomes o2
+                WHERE o2.evaluation_id = o.evaluation_id
+                  AND o2.id > o.id
+                  AND o2.action IN ('approved', 'hired', 'disapproved', 'rejected')
+              )
         """
         params = [job_name]
         if date_from:
@@ -1604,10 +1613,19 @@ def list_approved_for_job(job_name, date_from=None, date_to=None):
 
 
 def list_disapproved_for_job(job_name):
-    """返回该岗位所有不通过（disapproved/rejected）的候选人，按决定时间倒序。"""
+    """返回该岗位最终状态为不通过（disapproved/rejected）的候选人，按决定时间倒序。
+    每个 evaluation 只取一行：最近的 disapproved/rejected outcome，且其后无更晚的决定性操作。
+    """
     with get_conn() as conn:
         sql = _eval_base_sql() + """
-            WHERE j.name = ? AND o.action IN ('disapproved', 'rejected')
+            WHERE j.name = ?
+              AND o.action IN ('disapproved', 'rejected')
+              AND NOT EXISTS (
+                SELECT 1 FROM outcomes o2
+                WHERE o2.evaluation_id = o.evaluation_id
+                  AND o2.id > o.id
+                  AND o2.action IN ('approved', 'hired', 'disapproved', 'rejected')
+              )
             ORDER BY o.action_at DESC
         """
         rows = conn.execute(sql, [job_name]).fetchall()

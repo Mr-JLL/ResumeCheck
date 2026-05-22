@@ -45,15 +45,6 @@ try:
 except ImportError:
     HAS_FILE_PARSER = False
 
-# PyMuPDF >= 1.24 删除了 Rect.get_area()，但 pdf2docx 0.5.x 仍然调用它。
-# 在此补回该方法，使两个库可以共存而无需降级任何包。
-try:
-    import fitz as _fitz_patch
-    if not hasattr(_fitz_patch.Rect, 'get_area'):
-        _fitz_patch.Rect.get_area = lambda self, unit='px': abs(self.width * self.height)
-    del _fitz_patch
-except Exception:
-    pass
 
 if sys.platform == "win32":
     try:
@@ -191,19 +182,22 @@ _scrape_sessions: dict = {}
 _dl_status: dict = {
     "state":        "idle",   # idle | running | cancelled | done | error
     "job_name":     "",
-    "filetype":     "",       # pdf | word | both
+    "filetype":     "pdf",
     "total":        0,
     "done":         0,
     "failed":       0,        # 51job 访问/CDP 失败的数量
-    "conv_failed":  0,        # PDF→Word 转换失败的数量（文件已从51job获取）
     "current_name": "",
-    "results":      [],       # [{resume_id, name, pdf_ok, word_ok, fetch_err, word_conv_err}]
+    "results":      [],       # [{resume_id, name, pdf_ok, fetch_err}]
     "error":        "",
     "started_at":   0.0,
     "completed_at": 0.0,
 }
 _dl_lock        = threading.Lock()
 _dl_cancel_flag = threading.Event()
+
+# 扩展设备本机批量下载任务状态（每台设备独立，互不影响）
+_ext_dl_tasks: dict = {}  # device_id → {state,done,failed,total,current_name,job_name,batch_id,error_msg,started_at}
+_ext_dl_lock  = threading.Lock()
 
 _RESUME_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]{4,80}$')
 
@@ -672,20 +666,16 @@ def _create_headless_driver(cookies, local_storage, session_storage):
 
 def _bg_download_worker(items, filetype, job_name):
     """
-    后台顺序下载简历（真正的文字版 PDF）。
+    后台顺序下载简历（文字版 PDF）。
     原理：克隆主浏览器完整鉴权状态（Cookie+localStorage+sessionStorage）
          → 注入无头 Edge → Page.printToPDF（文字版 PDF）。
-    Word 格式通过 pdf2docx 转换。
     """
-    need_pdf  = filetype in ("pdf",  "both")
-    need_word = filetype in ("word", "both")
-
     def _upd(**kw):
         with _dl_lock:
             _dl_status.update(kw)
 
-    _upd(state="running", job_name=job_name, filetype=filetype,
-         total=len(items), done=0, failed=0, conv_failed=0, current_name="",
+    _upd(state="running", job_name=job_name, filetype="pdf",
+         total=len(items), done=0, failed=0, current_name="",
          results=[], error="", started_at=time.time(), completed_at=0.0)
 
     results = []
@@ -727,29 +717,33 @@ def _bg_download_worker(items, filetype, job_name):
             name      = item.get("name", resume_id)
             _upd(current_name=name)
 
-            pdf_path  = os.path.join(FILES_DIR, resume_id + ".pdf")
-            word_path = os.path.join(FILES_DIR, resume_id + ".docx")
-            pdf_exists  = os.path.exists(pdf_path)
-            word_exists = os.path.exists(word_path)
+            pdf_path   = os.path.join(FILES_DIR, resume_id + ".pdf")
+            pdf_exists = os.path.exists(pdf_path)
 
             res = {"resume_id": resume_id, "name": name,
-                   "pdf_ok": False, "word_ok": False,
-                   "fetch_err": False, "word_conv_err": False}
+                   "pdf_ok": False, "fetch_err": False}
 
-            all_done = (not need_pdf or pdf_exists) and (not need_word or word_exists)
-            if all_done:
-                res["pdf_ok"]  = need_pdf  and pdf_exists
-                res["word_ok"] = need_word and word_exists
+            if pdf_exists:
+                res["pdf_ok"] = True
                 results.append(res)
                 _upd(done=i + 1, results=list(results))
                 continue
 
-            tmp_pdf = None
             try:
+                from selenium.webdriver.common.by import By
+                from selenium.webdriver.support.ui import WebDriverWait
+                from selenium.webdriver.support import expected_conditions as EC
+
                 url = (f"https://ehire.51job.com/Revision/talent/resume/detail"
                        f"?resumeId={resume_id}")
                 headless_drv.get(url)
-                time.sleep(3)
+                # 等待简历正文区块出现（与抓取流程一致），页面渲染完即继续，
+                # 避免固定 sleep(3) 的浪费；若 8 秒内未出现（极罕见），回退固定等待
+                try:
+                    WebDriverWait(headless_drv, 8).until(
+                        EC.presence_of_element_located((By.ID, "work")))
+                except Exception:
+                    time.sleep(3)
 
                 final_url = headless_drv.current_url
                 if "resumeId" not in final_url or "detail" not in final_url:
@@ -758,68 +752,33 @@ def _bg_download_worker(items, filetype, job_name):
                         "请关闭浏览器后重新打开并登录 51job"
                     )
 
-                need_gen = ((need_pdf and not pdf_exists) or
-                            (need_word and not word_exists and not pdf_exists))
+                cdp_result = headless_drv.execute_cdp_cmd("Page.printToPDF", {
+                    "printBackground": True,
+                    "format": "A4",
+                    "marginTop": 0.5, "marginBottom": 0.5,
+                    "marginLeft": 0.4, "marginRight": 0.4,
+                    "scale": 1.0,
+                })
+                pdf_bytes = base64.b64decode(cdp_result.get("data", ""))
+                if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
+                    raise ValueError("打印结果不是有效 PDF")
+                if len(pdf_bytes) > 50 * 1024 * 1024:
+                    raise ValueError("PDF 超过 50MB，跳过")
 
-                pdf_bytes = None
-                if need_gen:
-                    cdp_result = headless_drv.execute_cdp_cmd("Page.printToPDF", {
-                        "printBackground": True,
-                        "format": "A4",
-                        "marginTop": 0.5, "marginBottom": 0.5,
-                        "marginLeft": 0.4, "marginRight": 0.4,
-                        "scale": 1.0,
-                    })
-                    pdf_bytes = base64.b64decode(cdp_result.get("data", ""))
-                    if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
-                        raise ValueError("打印结果不是有效 PDF")
-                    if len(pdf_bytes) > 50 * 1024 * 1024:
-                        raise ValueError("PDF 超过 50MB，跳过")
-
-                if need_pdf and not pdf_exists and pdf_bytes:
-                    with open(pdf_path, "wb") as f:
-                        f.write(pdf_bytes)
-
-                if need_word and not word_exists:
-                    source_pdf = pdf_path if os.path.exists(pdf_path) else None
-                    if source_pdf is None and pdf_bytes:
-                        tmp_pdf = pdf_path + ".tmp_conv"
-                        with open(tmp_pdf, "wb") as f:
-                            f.write(pdf_bytes)
-                        source_pdf = tmp_pdf
-                    if source_pdf:
-                        try:
-                            from pdf2docx import Converter
-                            cv = Converter(source_pdf)
-                            cv.convert(word_path, start=0, end=None)
-                            cv.close()
-                        except ImportError:
-                            logger.warning("pdf2docx 未安装")
-                            res["word_conv_err"] = True
-                        except Exception as conv_e:
-                            logger.warning(f"PDF→Word 转换失败 ({resume_id}): {conv_e}")
-                            res["word_conv_err"] = True
-
-                res["pdf_ok"]  = need_pdf  and os.path.exists(pdf_path)
-                res["word_ok"] = need_word and os.path.exists(word_path)
+                with open(pdf_path, "wb") as f:
+                    f.write(pdf_bytes)
+                res["pdf_ok"] = True
 
             except Exception as e:
                 logger.warning(f"后台下载失败 ({resume_id}): {e}")
                 res["fetch_err"] = True
-            finally:
-                if tmp_pdf and os.path.exists(tmp_pdf):
-                    try:
-                        os.remove(tmp_pdf)
-                    except OSError:
-                        pass
 
             results.append(res)
-            failed      = sum(1 for r in results if r.get("fetch_err"))
-            conv_failed = sum(1 for r in results if r.get("word_conv_err"))
-            _upd(done=i + 1, failed=failed, conv_failed=conv_failed, results=list(results))
+            failed = sum(1 for r in results if r.get("fetch_err"))
+            _upd(done=i + 1, failed=failed, results=list(results))
 
             if i < len(items) - 1 and not _dl_cancel_flag.is_set():
-                time.sleep(2.0)
+                time.sleep(1.0)
 
     except Exception as e:
         logger.error(f"后台下载 worker 异常崩溃: {e}")
@@ -833,9 +792,8 @@ def _bg_download_worker(items, filetype, job_name):
             except Exception:
                 pass
 
-    failed      = sum(1 for r in results if r.get("fetch_err"))
-    conv_failed = sum(1 for r in results if r.get("word_conv_err"))
-    _upd(state="done", done=len(results), failed=failed, conv_failed=conv_failed,
+    failed = sum(1 for r in results if r.get("fetch_err"))
+    _upd(state="done", done=len(results), failed=failed,
          results=results, current_name="", completed_at=time.time())
 
 
@@ -946,6 +904,9 @@ def approved_page(job_name):
     # 阶段统计
     stage_counts = database.count_hr_stages_for_job(job_name)
 
+    # 硬性条件名（用于前端过滤 matches/mismatches 中的冗余项）
+    hard_cond_names = sorted(_get_hard_condition_names(job))
+
     return render_template(
         "approved.html",
         job_name=job_name,
@@ -957,6 +918,7 @@ def approved_page(job_name):
         date_from=date_from,
         date_to=date_to,
         total=len(candidates),
+        hard_cond_names=hard_cond_names,
     )
 
 
@@ -1267,6 +1229,58 @@ def api_audit_refresh(job_name):
         return jsonify(ok=False, message=str(e)), 500
 
 
+# =============================================================================
+# 内部辅助：获取该岗位的硬性条件名集合（用于前端过滤 matches/mismatches）
+# =============================================================================
+
+def _get_hard_condition_names(job):
+    """从 job_criteria_notes(is_hard=1) 和 config_json.rules(type=hard) 提取硬性条件名。"""
+    names = set()
+    if not job:
+        return names
+    for n in database.get_confirmed_criteria_notes(job["id"]):
+        if n.get("is_hard"):
+            cname = (n.get("condition_name") or "").strip()
+            if cname:
+                names.add(cname)
+    try:
+        cfg = json.loads(job.get("config_json") or "{}")
+        for r in cfg.get("rules", []):
+            if r.get("type") == "hard":
+                rname = (r.get("name") or "").strip()
+                if rname:
+                    names.add(rname)
+    except Exception:
+        pass
+    return names
+
+
+# =============================================================================
+# API：候选人改名
+# =============================================================================
+
+@app.route("/api/candidate/rename", methods=["POST"])
+def api_candidate_rename():
+    data = request.get_json() or {}
+    resume_id = (data.get("resume_id") or "").strip()
+    new_name  = (data.get("new_name")  or "").strip()
+    if not resume_id:
+        return jsonify(ok=False, message="缺少 resume_id"), 400
+    if not new_name:
+        return jsonify(ok=False, message="姓名不能为空"), 400
+    if len(new_name) > 50:
+        return jsonify(ok=False, message="姓名不能超过50字"), 400
+    try:
+        with database.get_conn() as conn:
+            result = conn.execute(
+                "UPDATE candidates SET name=? WHERE resume_id=?",
+                (new_name, resume_id))
+            if result.rowcount == 0:
+                return jsonify(ok=False, message="候选人不存在"), 404
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(ok=False, message=str(e)), 500
+
 
 # =============================================================================
 # API：候选人操作记录（含通过/不通过）
@@ -1360,64 +1374,6 @@ def api_hr_stage_counts(job_name):
 # API：处理台数据 + 跨岗位状态 + 简历 HTML 内容
 # =============================================================================
 
-_DEGREE_ORDER = ["高中", "中专", "大专", "本科", "硕士", "博士"]
-
-
-def _degree_idx(d):
-    if not d:
-        return -1
-    for i, level in enumerate(_DEGREE_ORDER):
-        if level in d:
-            return i
-    return -1
-
-
-def _build_hired_profiles(job_name):
-    rows = database.get_hired_candidates(job_name, limit=20)
-    profiles = []
-    for r in rows:
-        sj = r.get("structured_json")
-        parsed = {}
-        if sj:
-            try:
-                parsed = json.loads(sj) if isinstance(sj, str) else sj
-            except Exception:
-                pass
-        profiles.append({
-            "first_degree": parsed.get("first_degree"),
-            "total_years": parsed.get("total_years"),
-            "industry_tags": parsed.get("industry_tags") or [],
-        })
-    return profiles
-
-
-def _compute_hired_similarity(cand, hired_profiles, cand_sj_parsed):
-    if not hired_profiles:
-        return None
-    hired_years = [p["total_years"] for p in hired_profiles if isinstance(p.get("total_years"), (int, float))]
-    avg_years = sum(hired_years) / len(hired_years) if hired_years else None
-    hired_degs = [_degree_idx(p.get("first_degree")) for p in hired_profiles]
-    hired_degs = [d for d in hired_degs if d >= 0]
-    avg_deg = sum(hired_degs) / len(hired_degs) if hired_degs else None
-    hired_ind_set = set()
-    for p in hired_profiles:
-        for t in (p.get("industry_tags") or []):
-            hired_ind_set.add(t)
-    scores = []
-    cand_deg = _degree_idx(cand.get("first_degree"))
-    if avg_deg is not None and cand_deg >= 0:
-        scores.append(max(0.0, 1.0 - abs(cand_deg - avg_deg) / 2.0) * 0.30)
-    if avg_years and isinstance(cand.get("total_years"), (int, float)):
-        diff = abs(cand["total_years"] - avg_years)
-        scores.append(max(0.0, 1.0 - diff / max(avg_years, 1) * 0.5) * 0.35)
-    if hired_ind_set and cand_sj_parsed:
-        cand_inds = set(cand_sj_parsed.get("industry_tags") or [])
-        if cand_inds:
-            union = cand_inds | hired_ind_set
-            scores.append(len(cand_inds & hired_ind_set) / len(union) * 0.35)
-    if not scores:
-        return None
-    return round(sum(scores) / (0.30 + 0.35 + 0.35) * 100)
 
 
 @app.route("/api/triage/list", methods=["GET"])
@@ -1475,20 +1431,10 @@ def api_triage_list():
         target_years=target_years,
     )
 
-    # 已录用者画像，用于相似度计算
-    hired_profiles = _build_hired_profiles(job_name)
-
     out = []
     for e in ranked:
         matches, mismatches = _parse_eval_item(e)
         sj_raw = e.get("structured_json")
-        sj_parsed = None
-        if sj_raw:
-            try:
-                sj_parsed = json.loads(sj_raw) if isinstance(sj_raw, str) else sj_raw
-            except Exception:
-                pass
-        sim = _compute_hired_similarity(e, hired_profiles, sj_parsed)
         out.append({
             "evaluation_id": e["id"],
             "candidate_id": e["candidate_id"],
@@ -1510,7 +1456,6 @@ def api_triage_list():
             "duplicate_of_id": e.get("duplicate_of_id"),
             "scrape_session_id": e.get("scrape_session_id"),
             "_structured": _parse_structured(sj_raw),
-            "hired_similarity": sim,
         })
 
     # 注入文件存在标志
@@ -1520,26 +1465,30 @@ def api_triage_list():
         item["has_pdf"]  = item["resume_id"] in has_pdf
         item["has_word"] = item["resume_id"] in has_word
 
-    # 注入 Few-Shot 案例（面板可见性）
-    raw_examples = database.get_hired_candidates(job_name, limit=5)
-    few_shot_cases = []
-    for ex in raw_examples:
+    # 注入 HR 阶段标签和 decision_at（供前端按通过页顺序排序）
+    eval_ids = [item["evaluation_id"] for item in out]
+    stage_map = database.get_hr_stages_for_job(job_name)
+    decision_at_map = {}
+    if eval_ids:
+        ph = ",".join("?" * len(eval_ids))
+        with database.get_conn() as conn:
+            rows = conn.execute(
+                f"SELECT evaluation_id, MIN(action_at) AS decision_at "
+                f"FROM outcomes WHERE evaluation_id IN ({ph}) "
+                f"AND action IN ('approved','hired') "
+                f"GROUP BY evaluation_id",
+                eval_ids
+            ).fetchall()
+        decision_at_map = {r["evaluation_id"]: r["decision_at"] for r in rows}
+    for item in out:
+        eid = item["evaluation_id"]
+        ht = stage_map.get(eid) or {}
         try:
-            s = json.loads(ex["structured_json"]) if ex.get("structured_json") else {}
+            item["hr_stages"] = json.loads(ht.get("stages_json") or "[]")
         except Exception:
-            s = {}
-        wh = s.get("work_history", []) or []
-        few_shot_cases.append({
-            "name": ex.get("name", "已录用候选人"),
-            "first_degree": s.get("first_degree", "?"),
-            "total_years": s.get("total_work_years", "?"),
-            "english_level": s.get("english_level", "?"),
-            "industries": s.get("industry_tags", [])[:3],
-            "recent_roles": [
-                f"{w.get('company','?')}({w.get('role','')})"
-                for w in wh[:2] if isinstance(w, dict)
-            ],
-        })
+            item["hr_stages"] = []
+        item["hr_reject_reason"] = ht.get("reject_reason") or ""
+        item["decision_at"] = decision_at_map.get(eid)
 
     # 注入已确认评估细则
     job_id = job["id"] if job else None
@@ -1553,9 +1502,13 @@ def api_triage_list():
         for n in confirmed_notes
     ]
 
+    # 硬性条件名（供前端过滤 matches/mismatches 中的冗余项）
+    hard_condition_names = sorted(_get_hard_condition_names(job))
+
     return jsonify(ok=True, candidates=out, count=len(out),
-                   few_shot_cases=few_shot_cases,
-                   criteria_notes=criteria_notes)
+                   criteria_notes=criteria_notes,
+                   hard_condition_names=hard_condition_names,
+                   stage_order=database.HR_STAGE_ORDER)
 
 
 @app.route("/api/triage/cross_jobs/<resume_id>", methods=["GET"])
@@ -2333,16 +2286,46 @@ def api_agent_progress():
     current = int(data.get("current", 0))
     total = int(data.get("total", 0))
     msg = data.get("message", "")
+
+    # 下载阶段在 _devices 中显示 "downloading"，完成后回到 "idle"
+    _DONE_PHASES = {"done", "stopped", "error", "dl_done", "dl_error"}
+    if phase == "downloading":
+        device_status = "downloading"
+    elif phase in _DONE_PHASES:
+        device_status = "idle"
+    else:
+        device_status = phase
+
     with _agent_lock:
         d = _devices.setdefault(did, {})
         d.update({
             "name": data.get("device_name", did),
             "last_seen": time.time(),
             "browser_open": bool(data.get("browser_open", False)),
-            "status": phase if phase not in ("done", "stopped", "error") else "idle",
+            "status": device_status,
             "current_job": job_name if phase == "scraping" else None,
         })
-    if job_name:
+
+    # 扩展本机下载进度更新（漏洞3修复：服务器追踪任务状态供前端轮询）
+    if phase in ("downloading", "dl_done", "dl_error"):
+        batch_id = data.get("batch_id", "")
+        failed   = int(data.get("failed", 0))
+        with _ext_dl_lock:
+            task = _ext_dl_tasks.get(did)
+            if task and task.get("batch_id") == batch_id:
+                task["done"]         = current
+                task["failed"]       = failed
+                task["current_name"] = msg
+                if phase == "downloading" and msg.startswith("⚠"):
+                    # 保存最新的单项失败原因，供最终错误展示用
+                    task["last_item_error"] = msg
+                elif phase == "dl_done":
+                    task["state"]    = "done"
+                elif phase == "dl_error":
+                    task["state"]    = "error"
+                    task["error_msg"] = msg
+
+    if job_name and phase not in ("downloading", "dl_done", "dl_error"):
         running = phase == "scraping"
         pipeline._set_state(job_name, running=running,
                             phase=phase if running else "idle",
@@ -2528,23 +2511,19 @@ def api_resume_view_pdf(resume_id):
 
 @app.route("/api/batch_download", methods=["POST"])
 def api_batch_download():
-    """批量下载简历文件，打包成 ZIP 返回。
-    Body: {items: [{resume_id, name}], filetype: 'pdf'|'word', job_name: str}
+    """批量下载简历 PDF，打包成 ZIP 返回。
+    Body: {items: [{resume_id, name}], job_name: str}
     仅下载本地已存在的文件，跳过未下载的。单文件时直接返回原文件不打包。
     """
     data = request.get_json() or {}
     items = data.get("items", [])
-    filetype = data.get("filetype", "pdf")
     job_name = data.get("job_name", "岗位")
 
-    if filetype not in ("pdf", "word"):
-        return jsonify(ok=False, message="无效文件类型"), 400
     if not items:
         return jsonify(ok=False, message="未选择任何候选人"), 400
 
-    ext = ".pdf" if filetype == "pdf" else ".docx"
-    mime_single = ("application/pdf" if filetype == "pdf"
-                   else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    ext         = ".pdf"
+    mime_single = "application/pdf"
 
     found = []
     for item in items[:200]:
@@ -2580,9 +2559,8 @@ def api_batch_download():
             zf.write(path, arcname)
     buf.seek(0)
 
-    type_label = "PDF" if filetype == "pdf" else "Word"
-    safe_job   = re.sub(r'[/\\:*?"<>|]', '_', str(job_name))[:30]
-    zip_name   = f"{safe_job}_简历_{type_label}.zip"
+    safe_job = re.sub(r'[/\\:*?"<>|]', '_', str(job_name))[:30]
+    zip_name = f"{safe_job}_简历_PDF.zip"
     return send_file(buf, mimetype="application/zip", as_attachment=True, download_name=zip_name)
 
 
@@ -2593,17 +2571,14 @@ def api_batch_download():
 @app.route("/api/resume/bg_download", methods=["POST"])
 def api_bg_download():
     """
-    启动后台批量下载任务。
-    Body: {items:[{resume_id,name}], filetype:'pdf'|'word'|'both', job_name:str}
+    启动后台批量下载任务（仅 PDF）。
+    Body: {items:[{resume_id,name}], job_name:str}
     最多同时运行一个下载任务；浏览器未打开或正在抓取时拒绝。
     """
     data     = request.get_json() or {}
     items    = data.get("items", [])
-    filetype = data.get("filetype", "pdf")
     job_name = (data.get("job_name") or "岗位")[:50]
-
-    if filetype not in ("pdf", "word", "both"):
-        return jsonify(ok=False, message="无效文件类型，需为 pdf / word / both"), 400
+    filetype = "pdf"
 
     # 校验并清洗 resume_id（防路径穿越 / URL 注入）；清洗 name（防 ZipSlip）
     validated = []
@@ -2679,6 +2654,109 @@ def api_bg_cancel():
             _dl_status["state"]        = "cancelled"
             _dl_status["completed_at"] = time.time()
     return jsonify(ok=True, message="已发送取消信号")
+
+
+@app.route("/api/resume/ext_download", methods=["POST"])
+def api_ext_download():
+    """
+    向指定扩展设备发送批量本机下载命令。
+    每台设备独立执行，互不冲突；文件保存到该设备的本机下载目录。
+    Body: {items:[{resume_id,name}], job_name:str, device_id:str}
+    """
+    data      = request.get_json() or {}
+    device_id = str(data.get("device_id", "")).strip()
+    job_name  = (data.get("job_name") or "岗位")[:50]
+    items     = data.get("items", [])
+
+    if not device_id:
+        return jsonify(ok=False, message="缺少 device_id"), 400
+
+    # 漏洞5修复：拒绝服务器本机（服务器本机用 bg_download）
+    if device_id == SERVER_DEVICE_ID:
+        return jsonify(ok=False, message="服务器本机请使用「下载到服务器」"), 400
+
+    # 检查设备在线（漏洞3：离线设备发命令无意义）
+    now = time.time()
+    with _agent_lock:
+        d = _devices.get(device_id)
+        if not d or (now - d.get("last_seen", 0)) > DEVICE_TIMEOUT:
+            return jsonify(ok=False, message="该设备当前不在线，请确认扩展已打开并连接服务器"), 400
+
+    # 验证 items（与 bg_download 相同逻辑，防路径穿越）
+    validated = []
+    for item in items[:200]:
+        rid      = str(item.get("resume_id", "")).strip()
+        if not _RESUME_ID_RE.match(rid):
+            continue
+        raw_name = str(item.get("name", rid))
+        name     = re.sub(r'[/\\:*?"<>|]', '_', raw_name).strip()[:50] or rid[:50]
+        validated.append({"resume_id": rid, "name": name})
+
+    if not validated:
+        return jsonify(ok=False, message="无合法的候选人（resume_id 格式错误）"), 400
+
+    # 漏洞4修复：若该设备已有运行中任务则拒绝（409）
+    batch_id = f"{int(time.time()*1000):x}{random.randint(0, 0xffffff):06x}"[:16]
+    with _ext_dl_lock:
+        task = _ext_dl_tasks.get(device_id, {})
+        if task.get("state") == "running":
+            return jsonify(ok=False,
+                           message="该设备已有下载任务正在运行，请等待完成后重试"), 409
+        _ext_dl_tasks[device_id] = {
+            "state": "running", "done": 0, "failed": 0,
+            "total": len(validated), "current_name": "",
+            "job_name": job_name, "batch_id": batch_id,
+            "error_msg": "", "last_item_error": "", "started_at": time.time(),
+        }
+
+    # 推送 batch_download 命令到设备的长轮询队列
+    cmd = {
+        "command":  "batch_download",
+        "items":    validated,
+        "job_name": job_name,
+        "batch_id": batch_id,
+    }
+    with _agent_lock:
+        if device_id not in _device_commands:
+            _device_commands[device_id] = collections.deque()
+        _device_commands[device_id].append(cmd)
+        ev = _device_events.get(device_id)
+        if ev:
+            ev.set()
+
+    return jsonify(ok=True, count=len(validated), batch_id=batch_id,
+                   message=f"已向设备发送下载命令，共 {len(validated)} 份")
+
+
+@app.route("/api/resume/ext_dl_status")
+def api_ext_dl_status():
+    """
+    查询指定设备的本机下载任务进度（前端轮询）。
+    漏洞3修复：若设备离线且任务仍在 running，自动标记为 disconnected。
+    """
+    device_id = request.args.get("device_id", "").strip()
+    if not device_id:
+        return jsonify(ok=False, message="缺少 device_id"), 400
+
+    with _ext_dl_lock:
+        task = dict(_ext_dl_tasks.get(device_id, {}))
+
+    if not task:
+        return jsonify(ok=True, state="idle")
+
+    # 漏洞3修复：任务 running 但设备已离线 → 标记 disconnected
+    if task.get("state") == "running":
+        now = time.time()
+        with _agent_lock:
+            d = _devices.get(device_id, {})
+            online = (now - d.get("last_seen", 0)) < DEVICE_TIMEOUT
+        if not online:
+            with _ext_dl_lock:
+                if _ext_dl_tasks.get(device_id, {}).get("state") == "running":
+                    _ext_dl_tasks[device_id]["state"] = "disconnected"
+            task["state"] = "disconnected"
+
+    return jsonify(ok=True, **task)
 
 
 @app.route("/api/resume/file_info", methods=["POST"])

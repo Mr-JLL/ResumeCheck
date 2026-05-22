@@ -6,18 +6,29 @@ const port = chrome.runtime.connect({ name: 'keepalive' });
 const $ = id => document.getElementById(id);
 
 // ── 加载已保存的配置 ──────────────────────────────────────────────
-chrome.storage.local.get(['serverUrl', 'deviceName'], d => {
+chrome.storage.local.get(['serverUrl', 'deviceName', 'localDownloadFolder', 'deviceId'], d => {
   if (d.serverUrl)  $('serverUrl').value  = d.serverUrl;
   if (d.deviceName) $('deviceName').value = d.deviceName;
-  if (d.serverUrl)  checkServer(d.serverUrl);
+  const folder = d.localDownloadFolder || '51job简历下载';
+  $('localDownloadFolder').value = folder;
+  $('folderPreview').textContent = folder;
+  if (d.deviceId) $('deviceIdDisplay').textContent = d.deviceId;
+  if (d.serverUrl) checkServer(d.serverUrl);
+});
+
+// 文件夹名实时预览
+$('localDownloadFolder').addEventListener('input', () => {
+  const v = $('localDownloadFolder').value.trim() || '51job简历下载';
+  $('folderPreview').textContent = v;
 });
 
 // ── 保存设置 ──────────────────────────────────────────────────────
 $('btnSave').addEventListener('click', async () => {
-  const url  = $('serverUrl').value.trim().replace(/\/$/, '');
-  const name = $('deviceName').value.trim();
+  const url    = $('serverUrl').value.trim().replace(/\/$/, '');
+  const name   = $('deviceName').value.trim();
+  const folder = $('localDownloadFolder').value.trim() || '51job简历下载';
   if (!url) { alert('请输入服务器地址，例如 http://192.168.1.100:5000'); return; }
-  await chrome.storage.local.set({ serverUrl: url, deviceName: name });
+  await chrome.storage.local.set({ serverUrl: url, deviceName: name, localDownloadFolder: folder });
   $('btnSave').textContent = '✓ 已保存';
   $('btnSave').classList.add('saved-ok');
   setTimeout(() => {

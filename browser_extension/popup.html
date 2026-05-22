@@ -106,6 +106,18 @@
     <label>设备名称（驾驶舱显示用）</label>
     <input type="text" id="deviceName" placeholder="例：前台电脑、会议室 PC">
   </div>
+  <div class="field">
+    <label>本机下载文件夹名</label>
+    <input type="text" id="localDownloadFolder" placeholder="51job简历下载">
+    <div style="font-size:10px;color:#aaa;margin-top:3px">
+      简历保存到：浏览器下载目录\<span id="folderPreview">51job简历下载</span>\岗位名\姓名.pdf
+    </div>
+  </div>
+  <div class="field" style="background:#f0f4ff;border-radius:5px;padding:7px 10px;border:1px solid #d0daff">
+    <label style="color:#1f4e78">本机设备 ID</label>
+    <div id="deviceIdDisplay" style="font-size:11px;color:#555;font-family:monospace;word-break:break-all">读取中…</div>
+    <div style="font-size:10px;color:#aaa;margin-top:2px">在通过页面选择"下载到本机"时，选择与此 ID 匹配的设备</div>
+  </div>
 
   <button class="btn-save" id="btnSave">保存并连接</button>
 

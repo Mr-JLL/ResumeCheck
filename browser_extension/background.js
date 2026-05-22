@@ -110,6 +110,17 @@ async function execInTab(tabId, func, args = []) {
   return result[0]?.result;
 }
 
+// 在页面主世界（Main World）注入脚本——拦截器必须跑在主世界才能影响页面的原型链
+async function execInTabMain(tabId, func, args = []) {
+  const result = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func,
+    args,
+  });
+  return result[0]?.result;
+}
+
 // ── 从列表页提取候选人 ID ─────────────────────────────────────────
 
 async function getResumeCards(tabId) {
@@ -300,21 +311,50 @@ async function handleCommand(cmd, cfg) {
       `https://ehire.51job.com/Revision/talent/resume/detail?resumeId=${resumeId}`, 15000);
     await sleep(1200);
 
-    // 在标签页内拦截下载 URL 并以 fetch 取回文件内容
-    const b64 = await execInTab(tabId, async (ft) => {
+    // 在标签页主世界拦截下载 URL，取回文件内容后上传服务器
+    // 必须用 execInTabMain（主世界）——隔离世界的原型 patch 对页面 JS 无效
+    const dlResult = await execInTabMain(tabId, async (ft) => {
       const labels = ft === 'pdf' ? ['PDF', 'pdf'] : ['Word', 'WORD', 'word', 'Doc'];
 
-      // 拦截 XHR 和 window.open，捕获下载 URL
-      let capturedUrl = null;
+      let capturedBlob = null;
+      let capturedUrl  = null;
+
+      const origCOU = URL.createObjectURL;
+      URL.createObjectURL = function(obj) {
+        if (obj instanceof Blob && obj.size > 100) capturedBlob = obj;
+        return origCOU.call(URL, obj);
+      };
+      const origCE = document.createElement.bind(document);
+      document.createElement = function(tag) {
+        const el = origCE(tag);
+        if (typeof tag === 'string' && tag.toLowerCase() === 'a') {
+          const origClick = el.click.bind(el);
+          el.click = function() {
+            const h = el.href || '';
+            if (h && !h.startsWith('javascript:') && !h.startsWith('#') && !h.startsWith('data:')) {
+              capturedUrl = capturedUrl || h; return;
+            }
+            origClick();
+          };
+        }
+        return el;
+      };
       const origXHROpen = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function (m, url) {
-        if (url && typeof url === 'string') capturedUrl = url;
+      XMLHttpRequest.prototype.open = function(m, url) {
+        if (url && typeof url === 'string' && !/poll|heartbeat|ping|alive|status|check/i.test(url))
+          capturedUrl = url;
         return origXHROpen.apply(this, arguments);
       };
       const origOpen = window.open;
-      window.open = (url) => { if (url) capturedUrl = url; return null; };
+      window.open = (url) => { if (url) capturedUrl = capturedUrl || String(url); return null; };
 
-      // 找并点击主下载按钮
+      function restoreAll() {
+        URL.createObjectURL = origCOU;
+        document.createElement = origCE;
+        XMLHttpRequest.prototype.open = origXHROpen;
+        window.open = origOpen;
+      }
+
       const mainBtn = Array.from(document.querySelectorAll(
         'button, a, [role="button"], [class*="download"]'
       )).find(el => {
@@ -323,39 +363,350 @@ async function handleCommand(cmd, cfg) {
                 c.includes('download') || c.includes('Download')) &&
                el.offsetParent !== null;
       });
-      if (!mainBtn) { XMLHttpRequest.prototype.open = origXHROpen; window.open = origOpen; return null; }
+      if (!mainBtn) { restoreAll(); return { ok: false, error: '未找到下载按钮' }; }
       mainBtn.click();
       await new Promise(r => setTimeout(r, 1500));
 
-      // 点击格式选项
       const item = Array.from(document.querySelectorAll(
         'li, a, button, [role="option"], [role="menuitem"], [class*="item"]'
       )).find(el => el.offsetParent !== null && labels.some(l => el.textContent.trim().includes(l)));
       if (item) item.click();
-      await new Promise(r => setTimeout(r, 3000));
 
-      XMLHttpRequest.prototype.open = origXHROpen;
-      window.open = origOpen;
-      if (!capturedUrl) return null;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 400));
+        if (capturedBlob || capturedUrl) break;
+      }
+      restoreAll();
+
+      if (capturedBlob && capturedBlob.size > 100) {
+        return new Promise(resolve => {
+          const reader = new FileReader();
+          reader.onload  = () => resolve({ ok: true, data: reader.result.split(',')[1] });
+          reader.onerror = () => resolve({ ok: false, error: 'Blob读取失败' });
+          reader.readAsDataURL(capturedBlob);
+        });
+      }
+      if (!capturedUrl) return { ok: false, error: '未捕获到下载URL，请确认已登录且有下载权限' };
+
+      if (capturedUrl.startsWith('blob:')) {
+        try {
+          const r = await fetch(capturedUrl);
+          if (!r.ok) return { ok: false, error: `BlobURL HTTP ${r.status}` };
+          const b = await r.blob();
+          return new Promise(resolve => {
+            const reader = new FileReader();
+            reader.onload  = () => resolve({ ok: true, data: reader.result.split(',')[1] });
+            reader.onerror = () => resolve({ ok: false, error: 'BlobURL读取失败' });
+            reader.readAsDataURL(b);
+          });
+        } catch(e) { return { ok: false, error: `BlobURL访问失败: ${e.message}` }; }
+      }
 
       try {
         const resp = await fetch(capturedUrl, { credentials: 'include' });
-        if (!resp.ok) return null;
+        if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
         const blob = await resp.blob();
+        if (blob.size < 200) return { ok: false, error: `文件过小(${blob.size}字节)，可能需重新登录` };
         return new Promise(resolve => {
           const reader = new FileReader();
-          reader.onload  = () => resolve(reader.result.split(',')[1]);
-          reader.onerror = () => resolve(null);
+          reader.onload  = () => resolve({ ok: true, data: reader.result.split(',')[1] });
+          reader.onerror = () => resolve({ ok: false, error: 'FileReader读取失败' });
           reader.readAsDataURL(blob);
         });
-      } catch { return null; }
-    }, [filetype]).catch(() => null);
+      } catch(e) { return { ok: false, error: `Fetch失败: ${e.message}` }; }
+    }, [filetype]).catch(e => ({ ok: false, error: `脚本注入异常: ${String(e)}` }));
 
-    if (b64) {
+    if (dlResult?.ok === true && dlResult.data) {
       await apiFetch(`${cfg.url}/api/scrape/upload_file`, 'POST', {
-        resume_id: resumeId, filetype, data_b64: b64,
+        resume_id: resumeId, filetype, data_b64: dlResult.data,
       }, 30_000);
     }
+
+  } else if (action === 'batch_download') {
+    // ── 批量下载到本机（保存到 chrome.downloads，不上传服务器）──────
+    const items   = cmd.items    || [];
+    const jobName = cmd.job_name || '未知岗位';
+    const batchId = cmd.batch_id || '';
+    if (!items.length) return;
+
+    // 漏洞8修复：提前检查 51job 标签页是否存活
+    const stBd = await getSessionState();
+    if (!await isTabAlive(stBd.job51TabId)) {
+      await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
+        device_id: cfg.id, device_name: cfg.name,
+        job_name: jobName, phase: 'dl_error',
+        current: 0, total: items.length, failed: items.length,
+        message: '51job 标签页未打开，请先点击「打开浏览器」并登录51job',
+        batch_id: batchId,
+      });
+      return;
+    }
+    const tabIdBd = stBd.job51TabId;
+    startKeepAlive();
+
+    // 读取用户设置的下载文件夹名
+    const dlConf = await chrome.storage.local.get(['localDownloadFolder']);
+    const folder = (dlConf.localDownloadFolder || '51job简历下载').trim() || '51job简历下载';
+
+    // 漏洞6修复：截断过长名称，保证 Windows 路径安全
+    function _sanitize(s, maxLen) {
+      return String(s || '').replace(/[/\\:*?"<>|]/g, '_').trim().slice(0, maxLen) || 'resume';
+    }
+    const safeJob = _sanitize(jobName, 20);
+
+    let dlDone = 0, dlFailed = 0;
+
+    try {
+      for (let i = 0; i < items.length; i++) {
+        const { resume_id, name } = items[i];
+
+        // 上报当前项进度
+        await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
+          device_id: cfg.id, device_name: cfg.name,
+          job_name: jobName, phase: 'downloading',
+          current: dlDone, total: items.length, failed: dlFailed,
+          message: String(name || resume_id),
+          batch_id: batchId,
+        });
+
+        // 导航到简历详情页
+        await tabNavigateAndWait(tabIdBd,
+          `https://ehire.51job.com/Revision/talent/resume/detail?resumeId=${resume_id}`, 15000);
+        await sleep(1200);
+
+        // ── 综合拦截：捕获51job的真实下载机制 ─────────────────────────
+        // 51job 可能使用以下任意机制触发下载（按优先级排序）：
+        //   1. URL.createObjectURL(blob)  → 直接持有blob，无需二次fetch
+        //   2. <a download>.click()       → 动态创建锚元素后程序性点击
+        //   3. XMLHttpRequest             → XHR请求下载URL
+        //   4. window.fetch              → fetch API 请求下载URL
+        //   5. window.open               → 打开新窗口下载
+        // 拦截器必须在主世界（MAIN world）运行才能影响51job的原型链；
+        // 隔离世界（Isolated world，默认）的 prototype patch 对页面 JS 完全无效。
+        const result = await execInTabMain(tabIdBd, async () => {
+          let capturedBlob      = null;  // 优先级1：直接blob（URL.createObjectURL）
+          let capturedAnchorUrl = null;  // 优先级2：锚元素href（first-wins）
+          let capturedXHRUrl    = null;  // 优先级3：XHR URL（last-wins，排除后台轮询）
+          let capturedFetchUrl  = null;  // 优先级4：fetch URL（last-wins）
+
+          // ── 拦截1：URL.createObjectURL ────────────────────────────
+          const origCOU = URL.createObjectURL;
+          URL.createObjectURL = function(obj) {
+            if (obj instanceof Blob && obj.size > 100) capturedBlob = obj;
+            return origCOU.call(URL, obj);
+          };
+
+          // ── 拦截2a：document.createElement('a')（动态创建的锚元素）──
+          // 51job最常见模式：const a=createElement('a'); a.href=url; a.click();
+          const _origAnchorProto = HTMLAnchorElement.prototype.click;
+          const origCE = document.createElement.bind(document);
+          document.createElement = function(tagName) {
+            const el = origCE(tagName);
+            if (typeof tagName === 'string' && tagName.toLowerCase() === 'a') {
+              el.click = function() {
+                const h = el.href || '';
+                if (h && !h.startsWith('javascript:') && !h.startsWith('#') && !h.startsWith('data:')) {
+                  capturedAnchorUrl = capturedAnchorUrl || h;
+                  return; // 阻止浏览器直接下载，由我们接管
+                }
+                _origAnchorProto.call(el);
+              };
+            }
+            return el;
+          };
+
+          // ── 拦截2b：HTMLAnchorElement.prototype.click（已存在的锚元素）──
+          const origAnchorClick = HTMLAnchorElement.prototype.click;
+          HTMLAnchorElement.prototype.click = function() {
+            const h = this.href || '';
+            if (h && !h.startsWith('javascript:') && !h.startsWith('#') && !h.startsWith('data:') &&
+                (this.hasAttribute('download') || /\.(pdf|doc|docx)$/i.test(h) ||
+                 /download|resume/i.test(h))) {
+              capturedAnchorUrl = capturedAnchorUrl || h;
+              return; // 阻止浏览器直接下载
+            }
+            origAnchorClick.call(this);
+          };
+
+          // ── 拦截3：XMLHttpRequest（过滤掉明显的后台心跳请求）──────
+          const origXO = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function(method, url) {
+            if (url && typeof url === 'string' &&
+                !/poll|heartbeat|ping|alive|status|check/i.test(url)) {
+              capturedXHRUrl = url; // last-wins：下载请求在心跳之后
+            }
+            return origXO.apply(this, arguments);
+          };
+
+          // ── 拦截4：window.fetch ────────────────────────────────────
+          const origFetch = window.fetch;
+          window.fetch = function(input, init) {
+            const url = typeof input === 'string' ? input
+                      : (input instanceof Request ? input.url : '');
+            if (url && !/poll|heartbeat|ping|alive|status|check/i.test(url)) {
+              capturedFetchUrl = url;
+            }
+            return origFetch.apply(this, arguments);
+          };
+
+          // ── 拦截5：window.open ────────────────────────────────────
+          const origWO = window.open;
+          window.open = url => {
+            if (url) capturedAnchorUrl = capturedAnchorUrl || String(url);
+            return null;
+          };
+
+          function restoreAll() {
+            URL.createObjectURL = origCOU;
+            document.createElement = origCE;
+            HTMLAnchorElement.prototype.click = origAnchorClick;
+            XMLHttpRequest.prototype.open = origXO;
+            window.fetch = origFetch;
+            window.open = origWO;
+          }
+
+          // ── 查找下载按钮（宽松匹配：含"下载"二字或 class 含 download）──
+          const allVisible = Array.from(document.querySelectorAll(
+            'button, a, [role="button"], [class*="download"], [class*="Download"], [class*="btn"]'
+          )).filter(el => el.offsetParent !== null);
+
+          const mainBtn = allVisible.find(el => {
+            const t = el.textContent.trim();
+            const c = (el.className || '').toLowerCase();
+            return t.includes('下载') || c.includes('download');
+          });
+
+          if (!mainBtn) {
+            restoreAll();
+            const labels = allVisible.slice(0, 10)
+              .map(e => `"${e.textContent.trim().slice(0, 15)}"`)
+              .filter(Boolean).join(', ');
+            return { ok: false, error: `未找到下载按钮（页面可见元素: [${labels || '无'}]，请确认已登录51job且页面已完全加载）` };
+          }
+
+          mainBtn.click();
+
+          // ── 等待下拉菜单出现（轮询最多3s，每200ms检查一次）──────
+          let pdfItem = null;
+          for (let t = 0; t < 15; t++) {
+            await new Promise(r => setTimeout(r, 200));
+            pdfItem = Array.from(document.querySelectorAll(
+              'li, a, button, [role="option"], [role="menuitem"], ' +
+              '[class*="item"], [class*="option"], [class*="type"], [class*="format"]'
+            )).find(el => el.offsetParent !== null &&
+              ['PDF', 'pdf'].some(l => el.textContent.trim().includes(l)));
+            if (pdfItem) break;
+          }
+
+          const pdfLabel = pdfItem
+            ? `已点击"${pdfItem.textContent.trim().slice(0, 20)}"`
+            : '未找到PDF选项（可能直接触发下载）';
+
+          if (pdfItem) pdfItem.click();
+
+          // ── 等待下载触发（最多5s，任意捕获即立即退出）──────
+          for (let t = 0; t < 10; t++) {
+            await new Promise(r => setTimeout(r, 500));
+            if (capturedBlob || capturedAnchorUrl || capturedXHRUrl || capturedFetchUrl) break;
+          }
+
+          restoreAll();
+
+          // ── 优先级1：直接持有的blob ───────────────────────────────
+          if (capturedBlob && capturedBlob.size > 100) {
+            return new Promise(resolve => {
+              const reader = new FileReader();
+              reader.onload  = () => resolve({ type: 'blob', data: reader.result.split(',')[1] });
+              reader.onerror = () => resolve({ ok: false, error: `读取Blob失败 (${pdfLabel})` });
+              reader.readAsDataURL(capturedBlob);
+            });
+          }
+
+          // ── 优先级2-4：返回 URL，让后台脚本用 chrome.downloads 下载 ──
+          // 不在页面上下文内 fetch，避免 CDN CORS 限制
+          const capturedUrl = capturedAnchorUrl || capturedXHRUrl || capturedFetchUrl;
+          if (!capturedUrl) {
+            return { ok: false, error: `URL未捕获 (${pdfLabel}，请确认账号有简历下载权限并已重新登录51job)` };
+          }
+
+          // blob: URL 必须在页面内读取，不能跨上下文
+          if (capturedUrl.startsWith('blob:')) {
+            try {
+              const r = await fetch(capturedUrl);
+              if (!r.ok) return { ok: false, error: `BlobURL HTTP ${r.status}` };
+              const b = await r.blob();
+              return new Promise(resolve => {
+                const reader = new FileReader();
+                reader.onload  = () => resolve({ type: 'blob', data: reader.result.split(',')[1] });
+                reader.onerror = () => resolve({ ok: false, error: 'BlobURL读取失败' });
+                reader.readAsDataURL(b);
+              });
+            } catch(e) { return { ok: false, error: `BlobURL访问失败: ${e.message}` }; }
+          }
+
+          // https: URL —— 直接返回给后台脚本，由 chrome.downloads 下载
+          // chrome.downloads 走浏览器原生下载，携带 session cookie，无 CORS 限制
+          return { type: 'url', url: capturedUrl };
+
+        }).catch(e => ({ ok: false, error: `脚本注入异常: ${String(e)}` }));
+
+        // ── 根据捕获结果触发本机保存 ──────────────────────────────────
+        const safeCand = _sanitize(name, 20);
+        const rid8     = String(resume_id).slice(-8);
+        const filename = `${folder}/${safeJob}/${safeCand}_${rid8}.pdf`;
+
+        let dlUrl   = null;
+        let itemErr = null;
+
+        if (result?.type === 'blob' && result.data) {
+          // Blob 数据：转为 data URL 触发 chrome.downloads
+          dlUrl = `data:application/pdf;base64,${result.data}`;
+        } else if (result?.type === 'url' && result.url) {
+          // HTTPS URL：直接交给浏览器下载（带 session cookie，无 CORS 问题）
+          dlUrl = result.url;
+        } else {
+          itemErr = result?.error || '返回值异常';
+        }
+
+        if (dlUrl) {
+          const dlId = await new Promise(resolve => {
+            chrome.downloads.download({ url: dlUrl, filename, saveAs: false }, id => {
+              resolve((chrome.runtime.lastError || id == null) ? null : id);
+            });
+          });
+          if (dlId != null) {
+            dlDone++;
+          } else {
+            dlFailed++;
+            itemErr = chrome.runtime.lastError?.message || '本地保存失败（chrome.downloads 报错）';
+          }
+        }
+
+        if (itemErr) {
+          dlFailed++;
+          // 上报单项失败原因，让用户在进度 badge 中看到具体错误
+          await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
+            device_id: cfg.id, device_name: cfg.name,
+            job_name: jobName, phase: 'downloading',
+            current: dlDone, total: items.length, failed: dlFailed,
+            message: `⚠ ${name}: ${itemErr}`,
+            batch_id: batchId,
+          });
+        }
+      }
+    } finally {
+      stopKeepAlive();
+    }
+
+    // 最终上报完成（dl_done）或错误（dl_error）
+    await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
+      device_id: cfg.id, device_name: cfg.name,
+      job_name: jobName,
+      phase: dlFailed === items.length && dlDone === 0 ? 'dl_error' : 'dl_done',
+      current: dlDone, total: items.length, failed: dlFailed,
+      message: `下载完成：${dlDone}份成功，${dlFailed}份失败`,
+      batch_id: batchId,
+    });
   }
 }
 

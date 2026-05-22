@@ -29,20 +29,6 @@
   {% endif %}
 </div>
 
-<h2 class="section-title">阶段2：Few-Shot 案例库（通过/录用样本）</h2>
-<div class="learning-summary">
-  {% if hire_summary %}
-    <p>已积累 {{ hire_summary.total_hired }} 个正向样本，分布在 {{ hire_summary.jobs|length }} 个岗位。</p>
-    <ul>
-      {% for j in hire_summary.jobs %}
-      <li>{{ j.name }}：{{ j.count }} 个正向样本{% if j.count >= 3 %}（已激活 Few-Shot）{% else %}（需≥3个激活）{% endif %}</li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p>暂无通过样本。当 HR 标记候选人为「通过」或「录用」后，该候选人会自动加入下次评判的正例库。</p>
-  {% endif %}
-</div>
-
 <h2 class="section-title">阶段3：特征-结果相关性</h2>
 <div class="learning-summary">
   {% if correlation %}
