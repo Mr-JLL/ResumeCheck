@@ -42,13 +42,18 @@
           <input type="range" min="0" max="100" id="w-stability" value="{{ default_weights.stability }}">
         </label>
         <button class="btn btn-primary btn-apply-weights" id="btn-apply-weights">应用排序</button>
-        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;margin-top:6px;">
+        <label id="approved-only-label" style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;margin-top:6px;">
           <input type="checkbox" id="chk-approved-only"> 仅显示已通过（与通过页同序）
         </label>
       </div>
     </details>
 
   </div>
+</div>
+
+<div id="approved-only-banner" style="display:none;background:#e8f8ef;border:1px solid #27ae60;border-radius:8px;padding:8px 14px;margin:0 0 8px;font-size:13px;color:#1e8449;align-items:center;gap:10px;">
+  <span>✓ 当前仅显示已通过简历（来自通过页面）</span>
+  <button onclick="switchToAllMode()" style="margin-left:auto;padding:3px 10px;border:1px solid #27ae60;border-radius:5px;background:#fff;color:#1e8449;font-size:12px;cursor:pointer">切换至全部候选人</button>
 </div>
 
 <div class="triage-layout">
@@ -271,6 +276,10 @@ let _criteriaDetails = [];
 let _hardCondNames = new Set();
 let _stageOrder = [];
 
+const _urlParams = new URLSearchParams(window.location.search);
+const _approvedOnly = _urlParams.get("approved_only") === "1";
+const _includeExcluded = _urlParams.get("include_excluded") === "1";
+
 function $(id){ return document.getElementById(id); }
 
 function getWeights(){
@@ -379,8 +388,11 @@ function renderAiRefPanel(){
 
 async function loadList(){
   const w = getWeights();
-  const url = `/api/triage/list?job_name=${encodeURIComponent(JOB_NAME)}`
-            + `&weights=${encodeURIComponent(JSON.stringify(w))}`;
+  // 从通过页面进入时，强制加载排除分类以保证所有已通过候选人都能被找到
+  const needIncludeExcluded = _approvedOnly || _includeExcluded;
+  let url = `/api/triage/list?job_name=${encodeURIComponent(JOB_NAME)}`
+          + `&weights=${encodeURIComponent(JSON.stringify(w))}`;
+  if (needIncludeExcluded) url += "&include_excluded=1";
   $("left-loading").style.display = "block";
   $("left-content").style.display = "none";
   $("left-loading").textContent = "加载候选人列表…";
@@ -394,25 +406,38 @@ async function loadList(){
   _stageOrder = d.stage_order || [];
   _criteriaDetails = d.criteria_notes || [];
   _hardCondNames = new Set((d.hard_condition_names || []).map(s => s.trim()));
-  // 仅显示已通过（去除待处理和已排除候选人）
-  if ($("chk-approved-only").checked) {
+  // approved-only 模式：强制勾选并过滤，只保留最终状态为已通过的候选人
+  if (_approvedOnly) {
+    $("chk-approved-only").checked = true;
+    candidates = candidates.filter(c => _APPROVED_SET.has(c.latest_action));
+  } else if ($("chk-approved-only").checked) {
     candidates = candidates.filter(c => _APPROVED_SET.has(c.latest_action));
   }
   // 按通过页顺序排序
   candidates = sortByApprovedOrder(candidates);
   renderAiRefPanel();
   if (candidates.length === 0){
-    $("left-loading").textContent = "本岗位暂无待处理候选人。";
+    $("left-loading").textContent = _approvedOnly ? "通过页面暂无简历。" : "本岗位暂无待处理候选人。";
     updateCounter();
     return;
   }
   // 若 URL 带 ?start_id=<evaluation_id>，直接定位到该候选人
-  const startId = parseInt(new URLSearchParams(window.location.search).get("start_id"));
+  const startId = parseInt(_urlParams.get("start_id"));
   if (startId) {
     const found = candidates.findIndex(c => c.evaluation_id === startId);
-    idx = found >= 0 ? found : 0;
+    if (found >= 0) {
+      idx = found;
+    } else {
+      // 找不到目标候选人时明确提示，不再静默跳到第0个
+      $("left-loading").style.display = "block";
+      $("left-content").style.display = "none";
+      $("left-loading").textContent = "⚠ 该候选人不在当前列表中，可能已被重新评估或删除，请刷新通过页面后重试。";
+      $("resume-iframe").src = "about:blank";
+      updateCounter();
+      return;
+    }
   } else {
-    // 默认：找第一个尚未处理的
+    // 默认：找第一个尚未处理的；approved-only 模式下全部已处理，直接从第0个开始
     const first = candidates.findIndex(c =>
       !c.latest_action || (c.latest_action !== "approved" && c.latest_action !== "disapproved"
                            && c.latest_action !== "hired" && c.latest_action !== "rejected"));
@@ -423,15 +448,20 @@ async function loadList(){
 
 function updateCounter(){
   const total = candidates.length;
-  const handled = candidates.filter(c =>
-    c.latest_action === "approved" || c.latest_action === "disapproved"
-    || c.latest_action === "hired" || c.latest_action === "rejected").length;
   let grpPart = '';
   if (total > 0 && _stageOrder.length > 0) {
     const { name, pos, total: grpTotal } = _getCurrentGroupInfo();
     grpPart = ` · ${name} ${pos}/${grpTotal}`;
   }
-  $("triage-counter").textContent = `共 ${total} 份 · 已处理 ${handled} · 当前 ${total>0?idx+1:0}/${total}${grpPart}`;
+  if (_approvedOnly) {
+    // 通过页面入口：显示「通过简历 共N份 · 当前第X份」，去掉与用户无关的「已处理」数字
+    $("triage-counter").textContent = `通过简历 共 ${total} 份 · 当前 ${total>0?idx+1:0}/${total}${grpPart}`;
+  } else {
+    const handled = candidates.filter(c =>
+      c.latest_action === "approved" || c.latest_action === "disapproved"
+      || c.latest_action === "hired" || c.latest_action === "rejected").length;
+    $("triage-counter").textContent = `共 ${total} 份 · 已处理 ${handled} · 当前 ${total>0?idx+1:0}/${total}${grpPart}`;
+  }
 }
 
 function show(){
@@ -676,7 +706,12 @@ function next(){ if (idx < candidates.length - 1){ idx++; show(); } else { updat
 
 $("btn-pass").addEventListener("click", () => {
   const c = candidates[idx];
-  if (c && c.verdict === "黄色") {
+  if (!c) return;
+  if (c.latest_action === "approved" || c.latest_action === "hired") {
+    alert("该候选人已在通过页面，无需重复通过");
+    return;
+  }
+  if (c.verdict === "黄色") {
     openCorrectionModal("too_strict");
     return;
   }
@@ -976,6 +1011,25 @@ function startEditTriageName() {
 }
 
 $("cand-name").addEventListener('dblclick', startEditTriageName);
+
+// ── 切换至全部候选人（从通过页模式退出）──────────────────
+function switchToAllMode() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('approved_only');
+  url.searchParams.delete('include_excluded');
+  url.searchParams.delete('start_id');
+  window.location.href = url.toString();
+}
+
+// ── 根据入口模式初始化 UI ─────────────────────────────────
+if (_approvedOnly) {
+  // 隐藏「仅显示已通过」复选框（已被自动激活，避免用户误操作）
+  const label = document.getElementById("approved-only-label");
+  if (label) label.style.display = "none";
+  // 显示模式横幅
+  const banner = document.getElementById("approved-only-banner");
+  if (banner) banner.style.display = "flex";
+}
 
 // 启动
 loadList();

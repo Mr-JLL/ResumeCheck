@@ -22,21 +22,6 @@
       <div class="cp-stat"><span id="s-excl"  class="cp-num">—</span><span class="cp-lbl">已排除</span></div>
     </div>
 
-    <!-- 本批次实时状态 -->
-    <div id="current-batch-bar" style="display:none;background:#eaf6fb;border:1px solid #3498db;border-radius:6px;padding:8px 10px;font-size:12px;">
-      <div style="font-weight:700;color:#2471a3;margin-bottom:5px">📦 本批次实时</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;text-align:center;">
-        <div><div id="cb-scraped" style="font-size:17px;font-weight:700;color:#2c3e50">—</div><div style="color:#888;font-size:10px">抓取</div></div>
-        <div><div id="cb-passed" style="font-size:17px;font-weight:700;color:#27ae60">—</div><div style="color:#888;font-size:10px">AI通过</div></div>
-        <div><div id="cb-excl" style="font-size:17px;font-weight:700;color:#e74c3c">—</div><div style="color:#888;font-size:10px">AI排除</div></div>
-      </div>
-      <div style="margin-top:5px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;text-align:center;">
-        <div><div id="cb-approved" style="font-size:15px;font-weight:700;color:#27ae60">—</div><div style="color:#888;font-size:10px">HR通过</div></div>
-        <div><div id="cb-disapproved" style="font-size:15px;font-weight:700;color:#e74c3c">—</div><div style="color:#888;font-size:10px">HR不通过</div></div>
-        <div><div id="cb-pending" style="font-size:15px;font-weight:700;color:#f39c12">—</div><div style="color:#888;font-size:10px">待HR处理</div></div>
-      </div>
-    </div>
-
     <!-- 评估状态条 -->
     <div class="cp-eval-row">
       <span id="eval-badge" class="cp-badge cp-idle">空闲</span>
@@ -90,22 +75,6 @@
     <div class="cp-section" style="margin-top:10px">快速入口</div>
     <div class="cp-btn-col">
       <a class="btn btn-success" href="{{ url_for('triage_page', job_name=job_name) }}">⚡ 进入处理台</a>
-    </div>
-
-    <!-- 批次历史时间线 -->
-    <div class="cp-section" style="margin-top:10px">批次历史</div>
-    <div id="batch-timeline" style="font-size:11px;color:#777;padding:2px 0">加载中…</div>
-
-    <!-- 处理漏斗 -->
-    <div class="cp-section" style="margin-top:10px">处理漏斗 <span id="fn-session-hint" style="font-size:10px;color:#bbb;font-weight:normal">（本次批次）</span></div>
-    <div id="cp-funnel" style="display:flex;align-items:center;gap:4px;padding:4px 0;flex-wrap:wrap">
-      <div class="fn-box"><div class="fn-val" id="fn-scraped">—</div><div class="fn-key">抓取</div></div>
-      <span class="fn-arr">→<br><span id="fn-skip-drop" class="fn-drop"></span></span>
-      <div class="fn-box"><div class="fn-val" id="fn-entered">—</div><div class="fn-key">进入流程</div></div>
-      <span class="fn-arr">→<br><span id="fn-pf-rej" class="fn-drop"></span></span>
-      <div class="fn-box"><div class="fn-val" id="fn-prefilter">—</div><div class="fn-key">预滤通过</div></div>
-      <span class="fn-arr">→<br><span id="fn-excl-drop" class="fn-drop"></span></span>
-      <div class="fn-box fn-highlight"><div class="fn-val" id="fn-passed">—</div><div class="fn-key">非排除</div></div>
     </div>
 
     <!-- 实时日志 -->
@@ -276,14 +245,6 @@
 .cp-btn-danger{background:#e74c3c!important;color:#fff!important;border-color:#e74c3c!important}
 .cp-btn-warn{background:#e67e22!important;color:#fff!important;border-color:#e67e22!important}
 
-/* ── 处理漏斗 ── */
-.fn-box{background:#f5f7fa;border-radius:6px;padding:4px 8px;text-align:center;min-width:44px}
-.fn-highlight{background:#e8f8f5}
-.fn-val{font-size:14px;font-weight:700;color:#2c3e50}
-.fn-key{font-size:9px;color:#999;margin-top:1px;white-space:nowrap}
-.fn-arr{color:#bbb;font-size:10px;text-align:center;line-height:1.3;flex-shrink:0}
-.fn-drop{font-size:9px;color:#e74c3c;display:block}
-
 .cp-log{background:#1a1a2e;color:#a8d8ea;font-size:11px;line-height:1.5;
         padding:9px;border-radius:5px;height:180px;overflow-y:auto;
         margin:0;white-space:pre-wrap;word-break:break-all;flex-shrink:0}
@@ -304,6 +265,8 @@
 .cp-tab.cp-manual.active{border-bottom:2px solid #3d5afe;color:#3d5afe;font-weight:700}
 .cc.自投{border-left:4px solid #3d5afe}
 .vd-自投{background:#e8eafd;color:#3d5afe}
+.cc.主动搜索{border-left:4px solid #8e44ad}
+.vd-主动搜索{background:#f5eafd;color:#7d3c98}
 .import-panel-hidden{display:none}
 .import-panel-open{display:flex}
 
@@ -465,56 +428,6 @@ function fmtSessionId(sid) {
   } catch(_) { return sid; }
 }
 
-// ── 批次历史 ──────────────────────────────────────────
-async function loadBatchHistory() {
-  try {
-    const r = await fetch(`/api/job/batch_history?job_name=${encodeURIComponent(JOB)}`);
-    const d = await r.json();
-    if (!d.ok) return;
-
-    const sessions = d.sessions || [];
-    const currentSid = d.current_session_id;
-    const timeline = $('batch-timeline');
-    const currentBar = $('current-batch-bar');
-
-    if (sessions.length === 0) {
-      timeline.innerHTML = '<span style="color:#bbb">暂无抓取记录</span>';
-      currentBar.style.display = 'none';
-      return;
-    }
-
-    // 更新本批次实时状态栏
-    const current = currentSid ? sessions.find(s => s.id === currentSid) : sessions[0];
-    if (current) {
-      currentBar.style.display = 'block';
-      $('cb-scraped').textContent = current.total_scraped ?? '—';
-      $('cb-passed').textContent = current.ai_passed ?? '—';
-      $('cb-excl').textContent = current.ai_excluded ?? '—';
-      $('cb-approved').textContent = current.hr_approved ?? '—';
-      $('cb-disapproved').textContent = current.hr_disapproved ?? '—';
-      $('cb-pending').textContent = current.hr_pending ?? '—';
-    }
-
-    // 时间线：最近5次
-    const recent = sessions.slice(0, 5);
-    timeline.innerHTML = recent.map((s, i) => {
-      const label = fmtSessionId(s.started_at || s.id);
-      const total = s.total_scraped ?? 0;
-      const passed = s.ai_passed ?? 0;
-      const excl = s.ai_excluded ?? 0;
-      const isLive = s.id === currentSid;
-      const dot = isLive ? '🔵' : (i === 0 ? '⚫' : '⚪');
-      return `<div style="display:flex;align-items:center;gap:5px;padding:3px 0;border-bottom:1px solid #f0f0f0">
-        <span style="font-size:13px">${dot}</span>
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:600;color:#2c3e50;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(label)}${isLive?' <span style="color:#3498db;font-size:10px">进行中</span>':''}</div>
-          <div style="color:#888;font-size:10px">抓 ${total} · AI通 ${passed} · 排 ${excl}</div>
-        </div>
-      </div>`;
-    }).join('');
-  } catch(_) {}
-}
-
 function escHtml(s) {
   return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
@@ -673,7 +586,7 @@ function renderCard(c) {
   const hasPdf  = !!c.has_pdf;
   const hasWord = !!c.has_word;
   const isExcluded = c.verdict === '排除';
-  const isManual = c.verdict === '自投';
+  const isManual = c.verdict === '自投' || c.verdict === '主动搜索';
   const mHtml = (c.matches || []).map(m =>
     `<li><b>${m['条件']||''}</b>${m['条件']&&m['证据']?'：':''}${m['证据']||''}</li>`
   ).join('');
@@ -703,7 +616,7 @@ function renderCard(c) {
         <span class="cc-meta">${c.first_degree||''}</span>
         <span class="cc-meta">${c.school||''}</span>
         <span class="cc-meta" style="color:#999">${c.total_years||''}年</span>
-        ${['排除','自投'].includes(c.verdict) ? `<span class="cc-verdict vd-${c.verdict}">${c.verdict}</span>` : ''}
+        ${['排除','自投','主动搜索'].includes(c.verdict) ? `<span class="cc-verdict vd-${c.verdict}">${c.verdict}</span>` : ''}
         ${hasPdf  ? '<span class="cc-file-badge cc-pdf">PDF</span>'  : ''}
         ${hasWord ? '<span class="cc-file-badge cc-doc">Word</span>' : ''}
         ${c.duplicate_of_id ? '<span style="font-size:9px;background:#e74c3c;color:#fff;padding:1px 6px;border-radius:6px;font-weight:700;flex-shrink:0">↩ 重复</span>' : ''}
@@ -731,10 +644,10 @@ function renderCard(c) {
 
 // ── 主渲染 ────────────────────────────────────────────
 function renderCands() {
-  // Tab 数量：全部 = 非排除且非自投（AI评估候选人），自投和排除各自单独Tab
-  const nonExclNonManual = allCands.filter(c => c.verdict !== '排除' && c.verdict !== '自投');
+  // Tab 数量：全部 = 非排除且非手动导入（AI评估候选人），自投/主动搜索/排除各自单独Tab
+  const nonExclNonManual = allCands.filter(c => c.verdict !== '排除' && c.verdict !== '自投' && c.verdict !== '主动搜索');
   const cnt = { all: nonExclNonManual.length };
-  for (const v of ['深绿','蓝色','黄色','排除','自投'])
+  for (const v of ['深绿','蓝色','黄色','排除','自投','主动搜索'])
     cnt[v] = allCands.filter(c => c.verdict === v).length;
 
   const COLOR_SWATCH = {'深绿':'#27ae60','蓝色':'#3498db','黄色':'#d4a017'};
@@ -1117,49 +1030,13 @@ document.getElementById('pool-modal').addEventListener('click', e => {
 async function _init() {
   await loadDevices();
   pollStatus();
-  await loadCands();  // 先加载候选人（pollFunnel 需要 allCands）
+  await loadCands();
   checkBatchSession();
-  pollFunnel();
-  loadBatchHistory();
 }
 _init();
 setInterval(() => { pollStatus(); checkBatchSession(); loadDevices(); }, 3000);
-setInterval(pollFunnel, 10000);
 setInterval(pollErrors, 5000);
-setInterval(loadBatchHistory, 15000);
 
-
-// ── 处理漏斗轮询（按当前批次）──────────────────────────
-function pollFunnel() {
-  // 从已加载候选人中提取最新批次 session_id
-  const allSids = [...new Set(allCands.map(c => c.scrape_session_id).filter(Boolean))].sort().reverse();
-  const latestSid = allSids[0] || null;
-  let url = `/api/job/funnel_stats?job_name=${encodeURIComponent(JOB)}`;
-  if (latestSid) url += `&session_id=${encodeURIComponent(latestSid)}`;
-
-  fetch(url)
-    .then(r => r.json())
-    .then(d => {
-      if (!d.ok) return;
-      const f = d.funnel;
-      if (!f.is_session) {
-        // 无会话数据，全部显示 —
-        ['fn-scraped','fn-entered','fn-prefilter','fn-passed'].forEach(id => $( id).textContent = '—');
-        ['fn-skip-drop','fn-pf-rej','fn-excl-drop'].forEach(id => $(id).textContent = '');
-        $('fn-session-hint').textContent = '（暂无批次）';
-        return;
-      }
-      $('fn-session-hint').textContent = '（本次批次）';
-      $('fn-scraped').textContent   = f.scraped    || '—';
-      $('fn-entered').textContent   = f.entered    || '—';
-      $('fn-prefilter').textContent = f.prefilter_passed > 0 ? f.prefilter_passed : '—';
-      $('fn-passed').textContent    = f.non_excluded || '—';
-      $('fn-skip-drop').textContent = f.skip_count  ? `-${f.skip_count}已有` : '';
-      $('fn-pf-rej').textContent    = f.prefilter_rejected ? `-${f.prefilter_rejected}预滤` : '';
-      const excl = (f.evaluated || 0) - (f.non_excluded || 0);
-      $('fn-excl-drop').textContent = excl > 0 ? `-${excl}排除` : '';
-    }).catch(() => {});
-}
 
 // ── 错误通知轮询 ──────────────────────────────────────
 let _errSince = 0;

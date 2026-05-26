@@ -72,6 +72,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 FILES_DIR = os.path.join(ROOT, "data", "resume_files")
 os.makedirs(FILES_DIR, exist_ok=True)
 
+# 人类可读命名的下载副本（M.DD-岗位-姓名.pdf），供服务器下载后直接浏览
+NAMED_DL_DIR = os.path.join(ROOT, "data", "named_downloads")
+os.makedirs(NAMED_DL_DIR, exist_ok=True)
+
 # 服务端下载时的临时目录（Selenium 自动下载到此，然后移入 FILES_DIR）
 DL_TMP_DIR = os.path.join(ROOT, "data", "dl_tmp")
 os.makedirs(DL_TMP_DIR, exist_ok=True)
@@ -492,6 +496,48 @@ def _resume_file_path(resume_id, filetype):
     return os.path.join(FILES_DIR, resume_id + ext)
 
 
+def _build_named_filename(date_str, job_name, name, ext=".pdf"):
+    """将 date_str(YYYY-MM-DD)、job_name、name 组合为 M.DD-岗位-姓名.pdf。
+    任意字段缺失时返回 None，由调用方降级处理。"""
+    def _safe(s, maxlen):
+        return re.sub(r'[/\\:*?"<>|]', '_', str(s or '')).strip()[:maxlen]
+
+    date_part = ''
+    if date_str:
+        parts = str(date_str).split('-')
+        if len(parts) >= 3:
+            try:
+                m   = int(parts[1])
+                day = int(parts[2])
+                if m and day:
+                    date_part = f"{m}.{day}"
+            except (ValueError, IndexError):
+                pass
+
+    safe_job  = _safe(job_name, 20)
+    safe_name = _safe(name, 20)
+    if not (date_part and safe_job and safe_name):
+        return None
+    return f"{date_part}-{safe_job}-{safe_name}{ext}"
+
+
+def _copy_named(date_str, job_name, name, src_path):
+    """把 src_path 复制到 NAMED_DL_DIR，文件名用新格式；同名时追加 _2/_3 后缀。"""
+    named = _build_named_filename(date_str, job_name, name)
+    if not named:
+        return
+    dest    = os.path.join(NAMED_DL_DIR, named)
+    counter = 2
+    while os.path.exists(dest):
+        stem = named[:-4]
+        dest = os.path.join(NAMED_DL_DIR, f"{stem}_{counter}.pdf")
+        counter += 1
+    try:
+        shutil.copy2(src_path, dest)
+    except Exception:
+        pass
+
+
 def _check_resume_files(resume_ids):
     """批量检查哪些 resume_id 已有 PDF / Word 文件，返回两个 set"""
     has_pdf  = set()
@@ -669,6 +715,7 @@ def _bg_download_worker(items, filetype, job_name):
                 res["pdf_ok"] = True
                 results.append(res)
                 _upd(done=i + 1, results=list(results))
+                _copy_named(item.get("date", ""), job_name, name, pdf_path)
                 continue
 
             try:
@@ -710,6 +757,7 @@ def _bg_download_worker(items, filetype, job_name):
                 with open(pdf_path, "wb") as f:
                     f.write(pdf_bytes)
                 res["pdf_ok"] = True
+                _copy_named(item.get("date", ""), job_name, name, pdf_path)
 
             except Exception as e:
                 logger.warning(f"后台下载失败 ({resume_id}): {e}")
@@ -777,12 +825,24 @@ def dashboard():
                 SELECT COUNT(*) AS c FROM outcomes o
                 JOIN evaluations e ON o.evaluation_id = e.id
                 WHERE e.job_id=? AND o.action IN ('approved','hired')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM outcomes o2
+                    WHERE o2.evaluation_id = o.evaluation_id
+                      AND o2.id > o.id
+                      AND o2.action IN ('approved','hired','disapproved','rejected')
+                  )
             """, (j["id"],)).fetchone()
             j["approved_count"] = apr["c"] if apr else 0
             dis = conn.execute("""
                 SELECT COUNT(*) AS c FROM outcomes o
                 JOIN evaluations e ON o.evaluation_id = e.id
                 WHERE e.job_id=? AND o.action IN ('disapproved','rejected')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM outcomes o2
+                    WHERE o2.evaluation_id = o.evaluation_id
+                      AND o2.id > o.id
+                      AND o2.action IN ('approved','hired','disapproved','rejected')
+                  )
             """, (j["id"],)).fetchone()
             j["disapproved_count"] = dis["c"] if dis else 0
     for j in jobs:
@@ -1415,7 +1475,7 @@ def api_triage_list():
         ph = ",".join("?" * len(eval_ids))
         with database.get_conn() as conn:
             rows = conn.execute(
-                f"SELECT evaluation_id, MIN(action_at) AS decision_at "
+                f"SELECT evaluation_id, MAX(action_at) AS decision_at "
                 f"FROM outcomes WHERE evaluation_id IN ({ph}) "
                 f"AND action IN ('approved','hired') "
                 f"GROUP BY evaluation_id",
@@ -2042,59 +2102,6 @@ def api_reeval_prefilter_batch():
                    message=f"已清除 {deleted} 条预筛记录，正在重新评估 {len(resume_ids)} 份简历")
 
 
-@app.route("/api/job/funnel_stats")
-def api_job_funnel_stats():
-    """返回当前岗位的处理漏斗统计（5级，绑定当前会话）。
-    有 session_id 时只统计该批次；无 session_id 时返回空漏斗（前端显示—）。"""
-    job_name = request.args.get("job_name", "")
-    session_id = request.args.get("session_id")
-    job = database.get_job(job_name)
-    if not job:
-        return jsonify(ok=False, message="岗位不存在")
-    job_id = job["id"]
-
-    if not session_id:
-        # 无会话：漏斗全部显示 — （前端判断 is_session=False 时置灰）
-        return jsonify(ok=True, funnel={
-            "scraped": 0, "skip_count": 0, "entered": 0,
-            "prefilter_rejected": 0, "prefilter_passed": 0,
-            "evaluated": 0, "non_excluded": 0, "is_session": False,
-        })
-
-    # 抓取数：从内存会话获取（最精确），否则退化
-    session_resume_ids = _scrape_sessions.get(job_name)
-    st = pipeline.get_state(job_name)
-    skip_count = st.get("skip_count", 0)
-
-    with database.get_conn() as conn:
-        pf_count = conn.execute(
-            "SELECT COUNT(*) AS c FROM prefilter_rejects WHERE job_id=? AND scrape_session_id=?",
-            (job_id, session_id)).fetchone()["c"]
-        eval_count = conn.execute(
-            "SELECT COUNT(*) AS c FROM evaluations WHERE job_id=? AND scrape_session_id=?",
-            (job_id, session_id)).fetchone()["c"]
-        non_excl = conn.execute(
-            "SELECT COUNT(*) AS c FROM evaluations WHERE job_id=? AND scrape_session_id=? AND verdict != '排除'",
-            (job_id, session_id)).fetchone()["c"]
-
-    if session_resume_ids:
-        scraped = len(session_resume_ids)
-    else:
-        scraped = eval_count + pf_count + skip_count
-
-    entered = scraped - skip_count
-    pf_passed = entered - pf_count
-
-    return jsonify(ok=True, funnel={
-        "scraped": scraped,
-        "skip_count": skip_count,
-        "entered": entered,
-        "prefilter_rejected": pf_count,
-        "prefilter_passed": pf_passed,
-        "evaluated": eval_count,
-        "non_excluded": non_excl,
-        "is_session": True,
-    })
 
 
 @app.route("/api/job/errors")
@@ -2458,8 +2465,8 @@ def api_batch_download():
     仅下载本地已存在的文件，跳过未下载的。单文件时直接返回原文件不打包。
     """
     data = request.get_json() or {}
-    items = data.get("items", [])
-    job_name = data.get("job_name", "岗位")
+    items    = data.get("items", [])
+    job_name = (data.get("job_name") or "岗位")[:50]
 
     if not items:
         return jsonify(ok=False, message="未选择任何候选人"), 400
@@ -2476,26 +2483,32 @@ def api_batch_download():
         raw_name = (item.get("name") or rid).strip()
         # 清洗姓名：防止路径分隔符进入 ZIP entry（ZipSlip 防御）
         name = re.sub(r'[/\\:*?"<>|]', '_', raw_name)[:50] or rid[:50]
+        date = re.sub(r'[^0-9\-]', '', str(item.get("date", ""))).strip()[:10]
         path = os.path.join(FILES_DIR, rid + ext)
         if os.path.exists(path):
-            found.append((path, name, rid))
+            found.append((path, name, rid, date))
 
     if not found:
         return jsonify(ok=False, message="所选候选人均无本地文件，请先在驾驶舱触发下载"), 400
 
+    def _entry_name(name, rid, date):
+        named = _build_named_filename(date, job_name, name)
+        return named if named else f"{name}_{rid[:8]}{ext}"
+
     if len(found) == 1:
-        path, name, rid = found[0]
-        filename = f"{name}_{rid[:8]}{ext}"
+        path, name, rid, date = found[0]
+        filename = _entry_name(name, rid, date)
         return send_file(path, as_attachment=True, download_name=filename, mimetype=mime_single)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         seen = {}
-        for path, name, rid in found:
-            arcname = f"{name}_{rid[:8]}{ext}"
+        for path, name, rid, date in found:
+            arcname = _entry_name(name, rid, date)
             if arcname in seen:
                 seen[arcname] += 1
-                arcname = f"{name}_{rid[:8]}_{seen[arcname]}{ext}"
+                stem = arcname[:-4]
+                arcname = f"{stem}_{seen[arcname]}{ext}"
             else:
                 seen[arcname] = 1
             zf.write(path, arcname)
@@ -2531,7 +2544,9 @@ def api_bg_download():
         raw_name = str(item.get("name", rid))
         # 移除路径分隔符和 ZIP 危险字符，防止 ZipSlip 攻击
         name = re.sub(r'[/\\:*?"<>|]', '_', raw_name).strip()[:50] or rid[:50]
-        validated.append({"resume_id": rid, "name": name})
+        # 只保留数字和连字符，防止日期字段注入路径穿越字符
+        date = re.sub(r'[^0-9\-]', '', str(item.get("date", ""))).strip()[:10]
+        validated.append({"resume_id": rid, "name": name, "date": date})
 
     if not validated:
         return jsonify(ok=False, message="无合法的候选人（resume_id 格式错误）"), 400
@@ -2632,7 +2647,8 @@ def api_ext_download():
             continue
         raw_name = str(item.get("name", rid))
         name     = re.sub(r'[/\\:*?"<>|]', '_', raw_name).strip()[:50] or rid[:50]
-        validated.append({"resume_id": rid, "name": name})
+        date     = re.sub(r'[^0-9\-]', '', str(item.get("date", ""))).strip()[:10]
+        validated.append({"resume_id": rid, "name": name, "date": date})
 
     if not validated:
         return jsonify(ok=False, message="无合法的候选人（resume_id 格式错误）"), 400
@@ -2885,33 +2901,96 @@ def api_cleanup_candidates_list():
 
 @app.route("/api/job/cleanup/delete", methods=["POST"])
 def api_cleanup_delete():
-    """清理台：批量删除指定候选人的评估记录 + HTML 文件 + 向量"""
+    """清理台：删除当前岗位的评估记录；仅当候选人在所有岗位均无评估时才删除档案和文件"""
     data = request.get_json() or {}
     job_name = data.get("job_name", "")
-    items = data.get("items", [])   # [{evaluation_id, resume_id}, ...]
+    items = data.get("items", [])
     if not job_name or not items:
         return jsonify(ok=False, message="参数缺失"), 400
 
+    job = database.get_job(job_name)
+    if not job:
+        return jsonify(ok=False, message="岗位不存在"), 404
+    job_id = job["id"]
+
     html_dir = pipeline._resolve_workspace_dir(job_name)
     deleted_evals = 0
+    deleted_candidates = 0
     deleted_files = 0
 
     for item in items:
-        eval_id  = item.get("evaluation_id")
-        resume_id = item.get("resume_id")
-        if eval_id:
-            database.delete_evaluation(int(eval_id))
-            deleted_evals += 1
+        resume_id   = item.get("resume_id")
+        eval_id_raw = item.get("evaluation_id")
+
+        try:
+            eval_id = int(eval_id_raw)
+        except (TypeError, ValueError):
+            logger.warning(f"无效的 evaluation_id: {eval_id_raw!r}，跳过")
+            continue
+
+        # 1. 删除本岗位的评估记录及所有 FK 子记录
+        database.delete_evaluation(eval_id)
+        deleted_evals += 1
+
+        # 2. 删除本岗位的预筛拒绝记录（prefilter_rejects 没有 evaluation_id，需单独清理）
+        if resume_id:
+            with database.get_conn() as conn:
+                conn.execute(
+                    "DELETE FROM prefilter_rejects WHERE resume_id=? AND job_id=?",
+                    (resume_id, job_id)
+                )
+
+        # 3. 删除本岗位工作区 HTML（精确匹配 resume_id，避免子串误删）
         if resume_id and html_dir and os.path.exists(html_dir):
             for fname in os.listdir(html_dir):
-                if resume_id in fname and (fname.endswith(".html") or fname.endswith(".html.gz")):
+                frid, _ = pipeline._parse_html_filename(fname)
+                if frid == resume_id:
                     try:
                         os.remove(os.path.join(html_dir, fname))
                         deleted_files += 1
                     except Exception as e:
-                        logger.warning(f"删除文件失败 {fname}: {e}")
-    return jsonify(ok=True, deleted_evals=deleted_evals, deleted_files=deleted_files,
-                   message=f"已删除 {deleted_evals} 条评估记录，{deleted_files} 份简历文件")
+                        logger.warning(f"删除工作区文件失败 {fname}: {e}")
+
+        # 4. 检查候选人是否还有其他岗位的评估；有则保留档案和文件
+        if not resume_id:
+            continue
+        candidate = database.get_candidate_by_resume_id(resume_id)
+        if not candidate:
+            continue
+        if database.count_evaluations_for_candidate(candidate["id"]) > 0:
+            continue
+
+        # 5. 无任何剩余评估，彻底删除候选人档案和所有岗位的预筛记录
+        with database.get_conn() as conn:
+            conn.execute("DELETE FROM prefilter_rejects WHERE resume_id=?", (resume_id,))
+            conn.execute("DELETE FROM candidates WHERE id=?", (candidate["id"],))
+        deleted_candidates += 1
+
+        # 6. 删除 FILES_DIR 中的原始简历和文字 HTML（精确路径，不扫全目录）
+        for ext in (".pdf", ".docx", ".doc"):
+            p = os.path.join(FILES_DIR, resume_id + ext)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                    deleted_files += 1
+                except Exception as e:
+                    logger.warning(f"删除简历文件失败 {p}: {e}")
+        text_html = os.path.join(FILES_DIR, resume_id + "_text.html")
+        if os.path.exists(text_html):
+            try:
+                os.remove(text_html)
+                deleted_files += 1
+            except Exception as e:
+                logger.warning(f"删除文字 HTML 失败 {text_html}: {e}")
+
+    msg = f"已删除 {deleted_evals} 条评估记录"
+    if deleted_candidates:
+        msg += f"，彻底移除 {deleted_candidates} 位候选人"
+    if deleted_files:
+        msg += f"，{deleted_files} 份文件"
+    return jsonify(ok=True, deleted_evals=deleted_evals,
+                   deleted_candidates=deleted_candidates,
+                   deleted_files=deleted_files, message=msg)
 
 
 @app.route("/api/job/reset", methods=["POST"])
@@ -3964,6 +4043,10 @@ def api_manual_import_confirm():
     data = request.get_json() or {}
     job_name = data.get("job_name", "").strip()
     items = data.get("items", [])
+    _allowed_import_types = {"自投", "主动搜索"}
+    import_type = data.get("import_type", "自投")
+    if import_type not in _allowed_import_types:
+        return jsonify(ok=False, message="无效的导入类型"), 400
     if not job_name or not items:
         return jsonify(ok=False, message="参数不完整"), 400
 
@@ -4059,10 +4142,10 @@ def api_manual_import_confirm():
             }
             candidate_id = database.upsert_candidate(resume_id, cand_info)
 
-            # 写评估记录（verdict='自投'）
+            # 写评估记录（verdict 由前端选择：自投 或 主动搜索）
             eval_id = database.upsert_evaluation(
                 candidate_id, job_id,
-                verdict="自投",
+                verdict=import_type,
                 pros=[], cons=[],
                 has_hard_fail=False,
                 matches=[], mismatches=[],

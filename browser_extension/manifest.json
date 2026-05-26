@@ -8,7 +8,8 @@
     "scripting",
     "storage",
     "alarms",
-    "downloads"
+    "downloads",
+    "debugger"
   ],
   "host_permissions": [
     "https://ehire.51job.com/*",

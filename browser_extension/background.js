@@ -73,6 +73,7 @@ async function sendProgress(cfg, jobName, phase, current, total, msg) {
 // ── Keep-alive（防止 SW 在抓取中被挂起）──────────────────────────
 
 let _kaTimer = null;
+let _cdpSeq  = 0;  // waitForPageDownload 每次调用的唯一序号，用于生成不冲突的 alarm name
 
 function startKeepAlive() {
   if (_kaTimer) clearInterval(_kaTimer);
@@ -261,6 +262,96 @@ async function doScrape(cfg, jobName, targetCount, sessionId) {
   }
 }
 
+// ── 下载完成等待（修复 erase 过早取消 in_progress 下载的 bug）────────
+
+function waitDownloadDone(dlId) {
+  return new Promise(resolve => {
+    let settled = false;
+    const alarmName = `dltimeout_${dlId}`;
+
+    function finish(ok, err) {
+      if (settled) return;
+      settled = true;
+      chrome.downloads.onChanged.removeListener(onChange);
+      chrome.alarms.onAlarm.removeListener(onAlarm);
+      chrome.alarms.clear(alarmName);
+      resolve({ ok, err: err || null });
+    }
+
+    function onChange(delta) {
+      if (delta.id !== dlId) return;
+      const st = delta.state?.current;
+      if (st === 'complete') finish(true);
+      else if (st === 'interrupted') finish(false, delta.error?.current || '下载中断');
+    }
+
+    function onAlarm(alarm) {
+      if (alarm.name === alarmName) finish(false, '写入超时（60s）');
+    }
+
+    chrome.downloads.onChanged.addListener(onChange);
+    chrome.alarms.onAlarm.addListener(onAlarm);
+    chrome.alarms.create(alarmName, { when: Date.now() + 60_000 });
+
+    // 攻击2修复：注册监听器后立刻补检当前状态，防止 complete 早于监听器触发
+    chrome.downloads.search({ id: dlId }, items => {
+      if (!items?.length) { finish(false, 'download not found'); return; }
+      const st = items[0].state;
+      if (st === 'complete') finish(true);
+      else if (st === 'interrupted') finish(false, items[0].error || '下载中断');
+    });
+  });
+}
+
+// ── CDP 页面下载完成等待 ──────────────────────────────────────────
+// 监听 Page.downloadWillBegin（记录 GUID）和 Page.downloadProgress（检测 completed/canceled）。
+// 返回 { promise, cancel }：
+//   promise  — 下载成功时 resolve，失败/超时/取消时 reject
+//   cancel() — 外部主动取消（幂等），用于注入脚本失败时清理监听器，防止泄漏（攻击5解法）
+
+function waitForPageDownload(tabId) {
+  const alarmName = `cdpdl_${++_cdpSeq}`;
+  let guid    = null;
+  let settled = false;
+  let _finish;
+
+  const promise = new Promise((resolve, reject) => {
+    function finish(ok, msg) {
+      if (settled) return;
+      settled = true;
+      chrome.debugger.onEvent.removeListener(onCdpEvent);
+      chrome.alarms.onAlarm.removeListener(onAlarm);
+      chrome.alarms.clear(alarmName);
+      ok ? resolve() : reject(new Error(msg || 'CDP下载失败'));
+    }
+    _finish = finish;
+
+    function onCdpEvent(source, method, params) {
+      if (source.tabId !== tabId) return;
+      if (method === 'Page.downloadWillBegin') {
+        guid = params.guid;                                          // 记录本次下载的 GUID
+      } else if (method === 'Page.downloadProgress' && guid && params.guid === guid) {
+        if (params.state === 'completed') finish(true);
+        else if (params.state === 'canceled') finish(false, 'CDP下载被取消');
+      }
+    }
+
+    function onAlarm(alarm) {
+      if (alarm.name === alarmName) finish(false, 'CDP下载超时（60s）');
+    }
+
+    // 攻击6解法：监听器在触发下载的脚本注入之前注册，此处已保证顺序
+    chrome.debugger.onEvent.addListener(onCdpEvent);
+    chrome.alarms.onAlarm.addListener(onAlarm);
+    chrome.alarms.create(alarmName, { when: Date.now() + 60_000 });
+  });
+
+  return {
+    promise,
+    cancel: (msg) => _finish(false, msg || '下载已中止'),  // 幂等，settled 后无效
+  };
+}
+
 // ── 命令处理 ─────────────────────────────────────────────────────
 
 async function handleCommand(cmd, cfg) {
@@ -423,13 +514,14 @@ async function handleCommand(cmd, cfg) {
     }
 
   } else if (action === 'batch_download') {
-    // ── 批量下载到本机（保存到 chrome.downloads，不上传服务器）──────
+    // ── 批量下载到本机（CDP 静默模式 + chrome.downloads 降级）───────
+    // 主路径：Page.setDownloadBehavior 拦截下载，Edge 全程不弹下载面板；
+    // 降级路径：Page.setDownloadBehavior 不可用时，退回 chrome.downloads（行为与旧代码相同）。
     const items   = cmd.items    || [];
     const jobName = cmd.job_name || '未知岗位';
     const batchId = cmd.batch_id || '';
     if (!items.length) return;
 
-    // 漏洞8修复：提前检查 51job 标签页是否存活
     const stBd = await getSessionState();
     if (!await isTabAlive(stBd.job51TabId)) {
       await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
@@ -444,261 +536,265 @@ async function handleCommand(cmd, cfg) {
     const tabIdBd = stBd.job51TabId;
     startKeepAlive();
 
-    // 读取用户设置的下载文件夹名
-    const dlConf = await chrome.storage.local.get(['localDownloadFolder']);
-    const folder = (dlConf.localDownloadFolder || '51job简历下载').trim() || '51job简历下载';
+    const dlConf    = await chrome.storage.local.get(['localDownloadFolder']);
+    const rawFolder = (dlConf.localDownloadFolder || '51job简历下载').trim() || '51job简历下载';
+    const folder    = rawFolder.replace(/\\/g, '/').replace(/^[A-Za-z]:\//, '').replace(/^\/+/, '') || '51job简历下载';
 
-    // 漏洞6修复：截断过长名称，保证 Windows 路径安全
     function _sanitize(s, maxLen) {
       return String(s || '').replace(/[/\\:*?"<>|]/g, '_').trim().slice(0, maxLen) || 'resume';
     }
     const safeJob = _sanitize(jobName, 20);
 
+    function _makeDatePart(d) {
+      if (!d) return '';
+      const parts = String(d).split('-');
+      if (parts.length < 3) return '';
+      const m   = parseInt(parts[1], 10);
+      const day = parseInt(parts[2], 10);
+      return (m && day) ? `${m}.${day}` : '';
+    }
+
+    // ── 攻击1/2解法：探针下载，取得绝对目录路径并建好子目录结构 ─────
+    // 下载 1 字节占位文件 → 从 filename 字段截取绝对目录路径 → removeFile + erase 清理。
+    // 探针文件不显示简历名，符合"不弹出页面显示正在下载什么简历"的要求。
+    // Page.setDownloadBehavior 需要绝对路径；chrome.downloads 自动建子目录，探针顺带完成这一步。
+    let absTargetDir = null;  // 带末尾分隔符的绝对路径，供 Page.setDownloadBehavior 使用
+    let cdpEnabled   = false; // 若探针失败或 Page.setDownloadBehavior 不支持，退回降级路径
+
+    {
+      const { id: pId } = await new Promise(resolve =>
+        chrome.downloads.download({
+          url: 'data:application/octet-stream;base64,AA==',
+          filename: `${folder}/${safeJob}/_cdl_probe.tmp`,
+          saveAs: false, conflictAction: 'overwrite',
+        }, id => {
+          const err = chrome.runtime.lastError?.message || null;
+          resolve({ id: (err || id == null) ? null : id });
+        })
+      );
+      if (pId != null) {
+        await waitDownloadDone(pId);
+        const [pi] = await new Promise(r => chrome.downloads.search({ id: pId }, r));
+        if (pi?.filename) {
+          const last = Math.max(pi.filename.lastIndexOf('/'), pi.filename.lastIndexOf('\\'));
+          if (last !== -1) { absTargetDir = pi.filename.slice(0, last + 1); cdpEnabled = true; }
+        }
+        // 攻击2解法（续）：先 removeFile 再 erase（removeFile 要求 item 仍在历史里）
+        await new Promise(r => chrome.downloads.removeFile(pId, () => r())).catch(() => {});
+        chrome.downloads.erase({ id: pId });
+      }
+    }
+
     let dlDone = 0, dlFailed = 0;
+    let lastGoodDlId = null;  // 仅降级路径使用
+    const seenNames = new Set();  // 批次内文件名去重，防同名覆盖
 
     try {
       for (let i = 0; i < items.length; i++) {
-        const { resume_id, name } = items[i];
+        const { resume_id, name, date } = items[i];
 
-        // 上报当前项进度
+        if ((await chrome.storage.session.get('stopFlag')).stopFlag) {
+          await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
+            device_id: cfg.id, device_name: cfg.name,
+            job_name: jobName, phase: 'stopped',
+            current: dlDone, total: items.length, failed: dlFailed,
+            message: '已停止', batch_id: batchId,
+          });
+          break;
+        }
+
         await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
           device_id: cfg.id, device_name: cfg.name,
           job_name: jobName, phase: 'downloading',
           current: dlDone, total: items.length, failed: dlFailed,
-          message: String(name || resume_id),
-          batch_id: batchId,
+          message: String(name || resume_id), batch_id: batchId,
         });
 
-        // 导航到简历详情页
         await tabNavigateAndWait(tabIdBd,
           `https://ehire.51job.com/Revision/talent/resume/detail?resumeId=${resume_id}`, 15000);
         await sleep(1200);
 
-        // ── 综合拦截：捕获51job的真实下载机制 ─────────────────────────
-        // 51job 可能使用以下任意机制触发下载（按优先级排序）：
-        //   1. URL.createObjectURL(blob)  → 直接持有blob，无需二次fetch
-        //   2. <a download>.click()       → 动态创建锚元素后程序性点击
-        //   3. XMLHttpRequest             → XHR请求下载URL
-        //   4. window.fetch              → fetch API 请求下载URL
-        //   5. window.open               → 打开新窗口下载
-        // 拦截器必须在主世界（MAIN world）运行才能影响51job的原型链；
-        // 隔离世界（Isolated world，默认）的 prototype patch 对页面 JS 完全无效。
-        const result = await execInTabMain(tabIdBd, async () => {
-          let capturedBlob      = null;  // 优先级1：直接blob（URL.createObjectURL）
-          let capturedAnchorUrl = null;  // 优先级2：锚元素href（first-wins）
-          let capturedXHRUrl    = null;  // 优先级3：XHR URL（last-wins，排除后台轮询）
-          let capturedFetchUrl  = null;  // 优先级4：fetch URL（last-wins）
+        const safeCand  = _sanitize(name, 20);
+        const rid8      = String(resume_id).slice(-8);
+        const datePart  = _makeDatePart(date ? String(date).slice(0, 10) : '');
 
-          // ── 拦截1：URL.createObjectURL ────────────────────────────
-          const origCOU = URL.createObjectURL;
-          URL.createObjectURL = function(obj) {
-            if (obj instanceof Blob && obj.size > 100) capturedBlob = obj;
-            return origCOU.call(URL, obj);
-          };
+        let pdfFname;
+        if (datePart && safeJob && safeCand) {
+          const base = `${datePart}-${safeJob}-${safeCand}`;
+          let candidate = `${base}.pdf`;
+          let n = 2;
+          while (seenNames.has(candidate)) { candidate = `${base}_${n++}.pdf`; }
+          pdfFname = candidate;
+        } else {
+          pdfFname = `${safeCand}_${rid8}.pdf`;
+        }
+        seenNames.add(pdfFname);
 
-          // ── 拦截2a：document.createElement('a')（动态创建的锚元素）──
-          // 51job最常见模式：const a=createElement('a'); a.href=url; a.click();
-          const _origAnchorProto = HTMLAnchorElement.prototype.click;
-          const origCE = document.createElement.bind(document);
-          document.createElement = function(tagName) {
-            const el = origCE(tagName);
-            if (typeof tagName === 'string' && tagName.toLowerCase() === 'a') {
-              el.click = function() {
-                const h = el.href || '';
-                if (h && !h.startsWith('javascript:') && !h.startsWith('#') && !h.startsWith('data:')) {
-                  capturedAnchorUrl = capturedAnchorUrl || h;
-                  return; // 阻止浏览器直接下载，由我们接管
-                }
-                _origAnchorProto.call(el);
-              };
-            }
-            return el;
-          };
-
-          // ── 拦截2b：HTMLAnchorElement.prototype.click（已存在的锚元素）──
-          const origAnchorClick = HTMLAnchorElement.prototype.click;
-          HTMLAnchorElement.prototype.click = function() {
-            const h = this.href || '';
-            if (h && !h.startsWith('javascript:') && !h.startsWith('#') && !h.startsWith('data:') &&
-                (this.hasAttribute('download') || /\.(pdf|doc|docx)$/i.test(h) ||
-                 /download|resume/i.test(h))) {
-              capturedAnchorUrl = capturedAnchorUrl || h;
-              return; // 阻止浏览器直接下载
-            }
-            origAnchorClick.call(this);
-          };
-
-          // ── 拦截3：XMLHttpRequest（过滤掉明显的后台心跳请求）──────
-          const origXO = XMLHttpRequest.prototype.open;
-          XMLHttpRequest.prototype.open = function(method, url) {
-            if (url && typeof url === 'string' &&
-                !/poll|heartbeat|ping|alive|status|check/i.test(url)) {
-              capturedXHRUrl = url; // last-wins：下载请求在心跳之后
-            }
-            return origXO.apply(this, arguments);
-          };
-
-          // ── 拦截4：window.fetch ────────────────────────────────────
-          const origFetch = window.fetch;
-          window.fetch = function(input, init) {
-            const url = typeof input === 'string' ? input
-                      : (input instanceof Request ? input.url : '');
-            if (url && !/poll|heartbeat|ping|alive|status|check/i.test(url)) {
-              capturedFetchUrl = url;
-            }
-            return origFetch.apply(this, arguments);
-          };
-
-          // ── 拦截5：window.open ────────────────────────────────────
-          const origWO = window.open;
-          window.open = url => {
-            if (url) capturedAnchorUrl = capturedAnchorUrl || String(url);
-            return null;
-          };
-
-          function restoreAll() {
-            URL.createObjectURL = origCOU;
-            document.createElement = origCE;
-            HTMLAnchorElement.prototype.click = origAnchorClick;
-            XMLHttpRequest.prototype.open = origXO;
-            window.fetch = origFetch;
-            window.open = origWO;
-          }
-
-          // ── 查找下载按钮（宽松匹配：含"下载"二字或 class 含 download）──
-          const allVisible = Array.from(document.querySelectorAll(
-            'button, a, [role="button"], [class*="download"], [class*="Download"], [class*="btn"]'
-          )).filter(el => el.offsetParent !== null);
-
-          const mainBtn = allVisible.find(el => {
-            const t = el.textContent.trim();
-            const c = (el.className || '').toLowerCase();
-            return t.includes('下载') || c.includes('download');
-          });
-
-          if (!mainBtn) {
-            restoreAll();
-            const labels = allVisible.slice(0, 10)
-              .map(e => `"${e.textContent.trim().slice(0, 15)}"`)
-              .filter(Boolean).join(', ');
-            return { ok: false, error: `未找到下载按钮（页面可见元素: [${labels || '无'}]，请确认已登录51job且页面已完全加载）` };
-          }
-
-          mainBtn.click();
-
-          // ── 等待下拉菜单出现（轮询最多3s，每200ms检查一次）──────
-          let pdfItem = null;
-          for (let t = 0; t < 15; t++) {
-            await new Promise(r => setTimeout(r, 200));
-            pdfItem = Array.from(document.querySelectorAll(
-              'li, a, button, [role="option"], [role="menuitem"], ' +
-              '[class*="item"], [class*="option"], [class*="type"], [class*="format"]'
-            )).find(el => el.offsetParent !== null &&
-              ['PDF', 'pdf'].some(l => el.textContent.trim().includes(l)));
-            if (pdfItem) break;
-          }
-
-          const pdfLabel = pdfItem
-            ? `已点击"${pdfItem.textContent.trim().slice(0, 20)}"`
-            : '未找到PDF选项（可能直接触发下载）';
-
-          if (pdfItem) pdfItem.click();
-
-          // ── 等待下载触发（最多5s，任意捕获即立即退出）──────
-          for (let t = 0; t < 10; t++) {
-            await new Promise(r => setTimeout(r, 500));
-            if (capturedBlob || capturedAnchorUrl || capturedXHRUrl || capturedFetchUrl) break;
-          }
-
-          restoreAll();
-
-          // ── 优先级1：直接持有的blob ───────────────────────────────
-          if (capturedBlob && capturedBlob.size > 100) {
-            return new Promise(resolve => {
-              const reader = new FileReader();
-              reader.onload  = () => resolve({ type: 'blob', data: reader.result.split(',')[1] });
-              reader.onerror = () => resolve({ ok: false, error: `读取Blob失败 (${pdfLabel})` });
-              reader.readAsDataURL(capturedBlob);
-            });
-          }
-
-          // ── 优先级2-4：返回 URL，让后台脚本用 chrome.downloads 下载 ──
-          // 不在页面上下文内 fetch，避免 CDN CORS 限制
-          const capturedUrl = capturedAnchorUrl || capturedXHRUrl || capturedFetchUrl;
-          if (!capturedUrl) {
-            return { ok: false, error: `URL未捕获 (${pdfLabel}，请确认账号有简历下载权限并已重新登录51job)` };
-          }
-
-          // blob: URL 必须在页面内读取，不能跨上下文
-          if (capturedUrl.startsWith('blob:')) {
-            try {
-              const r = await fetch(capturedUrl);
-              if (!r.ok) return { ok: false, error: `BlobURL HTTP ${r.status}` };
-              const b = await r.blob();
-              return new Promise(resolve => {
-                const reader = new FileReader();
-                reader.onload  = () => resolve({ type: 'blob', data: reader.result.split(',')[1] });
-                reader.onerror = () => resolve({ ok: false, error: 'BlobURL读取失败' });
-                reader.readAsDataURL(b);
-              });
-            } catch(e) { return { ok: false, error: `BlobURL访问失败: ${e.message}` }; }
-          }
-
-          // https: URL —— 直接返回给后台脚本，由 chrome.downloads 下载
-          // chrome.downloads 走浏览器原生下载，携带 session cookie，无 CORS 限制
-          return { type: 'url', url: capturedUrl };
-
-        }).catch(e => ({ ok: false, error: `脚本注入异常: ${String(e)}` }));
-
-        // ── 根据捕获结果触发本机保存 ──────────────────────────────────
-        const safeCand = _sanitize(name, 20);
-        const rid8     = String(resume_id).slice(-8);
-        const filename = `${folder}/${safeJob}/${safeCand}_${rid8}.pdf`;
-
-        let dlUrl   = null;
         let itemErr = null;
 
-        if (result?.type === 'blob' && result.data) {
-          // Blob 数据：转为 data URL 触发 chrome.downloads
-          dlUrl = `data:application/pdf;base64,${result.data}`;
-        } else if (result?.type === 'url' && result.url) {
-          // HTTPS URL：直接交给浏览器下载（带 session cookie，无 CORS 问题）
-          dlUrl = result.url;
-        } else {
-          itemErr = result?.error || '返回值异常';
+        try {
+          await chrome.debugger.attach({ tabId: tabIdBd }, '1.3');
+        } catch (e) {
+          itemErr = `无法附加调试器（请关闭该标签的 DevTools 再重试）: ${e.message}`;
         }
 
-        if (dlUrl) {
-          const dlId = await new Promise(resolve => {
-            chrome.downloads.download({ url: dlUrl, filename, saveAs: false }, id => {
-              resolve((chrome.runtime.lastError || id == null) ? null : id);
-            });
-          });
-          if (dlId != null) {
-            dlDone++;
-          } else {
-            dlFailed++;
-            itemErr = chrome.runtime.lastError?.message || '本地保存失败（chrome.downloads 报错）';
+        if (!itemErr) {
+          let didSetBehavior = false;
+          try {
+            // ── Step 1: 尝试设置静默下载行为（新版浏览器可能拒绝，失败则降级）──
+            if (cdpEnabled) {
+              try {
+                await chrome.debugger.sendCommand({ tabId: tabIdBd }, 'Page.setDownloadBehavior', {
+                  behavior: 'allowAndName', downloadPath: absTargetDir, eventsEnabled: true,
+                });
+                didSetBehavior = true;
+              } catch (setBhvErr) {
+                // "Cannot not access browser-level commands" 及同类错误 → 降级
+                if (/browser.level|Cannot|Unknown command|setDownloadBehavior/i.test(setBhvErr.message)) {
+                  cdpEnabled = false;  // 本项及后续项全部走 chrome.downloads
+                } else {
+                  throw setBhvErr;    // 其他错误（如调试器未附加）继续上抛
+                }
+              }
+            }
+
+            // ── Step 2: printToPDF（两条路径共用，Page.printToPDF 始终可用）──
+            const pdfResult = await chrome.debugger.sendCommand(
+              { tabId: tabIdBd }, 'Page.printToPDF',
+              { printBackground: true, preferCSSPageSize: false }
+            );
+            const pdfB64 = pdfResult?.data;
+            if (!pdfB64) throw new Error('CDP 返回了空 PDF，请确认简历页面已完全加载');
+
+            if (didSetBehavior) {
+              // ── CDP 静默下载路径（Page.setDownloadBehavior 成功）────────────
+              // 攻击6解法：先注册监听器，再注入触发脚本，消除竞态
+              const { promise: dlPromise, cancel: cancelDl } = waitForPageDownload(tabIdBd);
+
+              try {
+                // 攻击8/9解法：通过 executeScript args 传递大 base64，延迟 300ms 再撤销 BlobURL
+                const injectRes = await chrome.scripting.executeScript({
+                  target: { tabId: tabIdBd },
+                  world: 'MAIN',
+                  func: (b64, fname) => {
+                    try {
+                      const bin = atob(b64);
+                      const buf = new Uint8Array(bin.length);
+                      for (let k = 0; k < bin.length; k++) buf[k] = bin.charCodeAt(k);
+                      const blob = new Blob([buf], { type: 'application/pdf' });
+                      const url  = URL.createObjectURL(blob);
+                      const a    = Object.assign(document.createElement('a'),
+                                                { href: url, download: fname });
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      setTimeout(() => URL.revokeObjectURL(url), 300);
+                      return { ok: true };
+                    } catch (e) { return { ok: false, error: e.message }; }
+                  },
+                  args: [pdfB64, pdfFname],
+                });
+                const injected = injectRes?.[0]?.result;
+                if (!injected?.ok) throw new Error(`注入下载脚本失败: ${injected?.error || '未知错误'}`);
+                // 攻击4解法：等待 Page.downloadProgress state=completed
+                await dlPromise;
+              } catch (e) {
+                // 攻击5解法：任何失败路径都调用 cancel()，移除监听器防止泄漏（幂等）
+                cancelDl();
+                throw e;
+              }
+
+              dlDone++;
+
+            } else {
+              // ── 降级路径：chrome.downloads（Page.setDownloadBehavior 不可用时）──
+              const fallbackFile = `${folder}/${safeJob}/${pdfFname}`;
+              const { dlId, dlErr } = await new Promise(resolve =>
+                chrome.downloads.download({
+                  url: `data:application/pdf;base64,${pdfB64}`,
+                  filename: fallbackFile,
+                  saveAs: false,
+                  conflictAction: 'uniquify',
+                }, id => {
+                  const err = chrome.runtime.lastError?.message || null;
+                  resolve({ dlId: (err || id == null) ? null : id, dlErr: err });
+                })
+              );
+              if (dlId == null) throw new Error(
+                dlErr ? `chrome.downloads 报错: ${dlErr}（文件名: ${fallbackFile}）`
+                      : `本地保存失败（文件名: ${fallbackFile}）`
+              );
+
+              const { ok, err: writeErr } = await waitDownloadDone(dlId);
+              if (!ok) {
+                chrome.downloads.erase({ id: dlId });
+                throw new Error(writeErr || '文件写入失败');
+              }
+
+              dlDone++;
+              if (lastGoodDlId != null) chrome.downloads.erase({ id: lastGoodDlId });
+              lastGoodDlId = dlId;
+            }
+
+          } catch (e) {
+            itemErr = `${didSetBehavior ? 'CDP' : ''}下载失败: ${e.message}`;
+          } finally {
+            // 只有成功 set 过才需要 restore，避免对失败项重复调用
+            if (didSetBehavior) {
+              await chrome.debugger.sendCommand({ tabId: tabIdBd }, 'Page.setDownloadBehavior', {
+                behavior: 'default',
+              }).catch(() => {});
+            }
+            await chrome.debugger.detach({ tabId: tabIdBd }).catch(() => {});
           }
         }
 
         if (itemErr) {
           dlFailed++;
-          // 上报单项失败原因，让用户在进度 badge 中看到具体错误
           await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
             device_id: cfg.id, device_name: cfg.name,
             job_name: jobName, phase: 'downloading',
             current: dlDone, total: items.length, failed: dlFailed,
-            message: `⚠ ${name}: ${itemErr}`,
-            batch_id: batchId,
+            message: `⚠ ${name}: ${itemErr}`, batch_id: batchId,
           });
         }
+
+        await sleep(1500 + Math.random() * 1500);
       }
     } finally {
       stopKeepAlive();
     }
 
-    // 最终上报完成（dl_done）或错误（dl_error）
+    // ── 批量结束：弹出文件资源管理器 ───────────────────────────────
+    if (dlDone > 0) {
+      if (cdpEnabled) {
+        // 攻击3解法：CDP 下载无 download ID，用哨兵文件获取 ID 供 show() 使用。
+        // show() 打开正确目录后，removeFile + erase 清理哨兵（先 removeFile 再 erase）。
+        const { id: sId } = await new Promise(resolve =>
+          chrome.downloads.download({
+            url: 'data:application/octet-stream;base64,AA==',
+            filename: `${folder}/${safeJob}/_cdl_done.tmp`,
+            saveAs: false, conflictAction: 'overwrite',
+          }, id => {
+            const err = chrome.runtime.lastError?.message || null;
+            resolve({ id: (err || id == null) ? null : id });
+          })
+        );
+        if (sId != null) {
+          await waitDownloadDone(sId);
+          chrome.downloads.show(sId);
+          setTimeout(() => {
+            chrome.downloads.removeFile(sId, () => chrome.downloads.erase({ id: sId }));
+          }, 500);
+        }
+      } else if (lastGoodDlId != null) {
+        // 降级模式：行为与原代码相同
+        chrome.downloads.show(lastGoodDlId);
+        setTimeout(() => chrome.downloads.erase({ id: lastGoodDlId }), 500);
+      }
+    }
+
+    // 最终上报完成（dl_done）或全部失败（dl_error）
     await apiFetch(`${cfg.url}/api/agent/progress`, 'POST', {
       device_id: cfg.id, device_name: cfg.name,
       job_name: jobName,

@@ -13,7 +13,7 @@
         <span class="apr-badge" id="total-badge">共{{ total }}人</span>
       </h1>
       <a class="btn" href="{{ url_for('cockpit_page', job_name=job_name) }}">驾驶舱</a>
-      <a class="btn" href="{{ url_for('triage_page', job_name=job_name) }}">⚡ 处理台</a>
+      <a class="btn" href="{{ url_for('triage_page', job_name=job_name) }}?approved_only=1&include_excluded=1">⚡ 处理台</a>
       <button class="btn" style="background:#3d5afe;color:#fff;border-color:#3d5afe" onclick="openImportPanel()">导入简历</button>
     </div>
     <!-- 需求8(4): 日期筛选 -->
@@ -66,9 +66,25 @@
      flex-direction:column;overflow:hidden">
   <div style="background:#3d5afe;color:#fff;padding:14px 18px;display:flex;align-items:center;
               justify-content:space-between;flex-shrink:0">
-    <span style="font-size:14px;font-weight:700">导入简历（自投）</span>
+    <span style="font-size:14px;font-weight:700">导入简历</span>
     <button onclick="closeImportPanel()" style="background:none;border:none;color:#fff;
             font-size:22px;cursor:pointer;line-height:1">×</button>
+  </div>
+  <div style="margin:10px 16px 0;display:flex;gap:6px;flex-shrink:0">
+    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px;
+                  padding:6px 12px;border-radius:6px;border:2px solid #3d5afe;background:#eef0fd;
+                  flex:1;justify-content:center" id="imp-lbl-zitou">
+      <input type="radio" name="import-type" value="自投" checked
+             onchange="updateImportType()" style="accent-color:#3d5afe">
+      <span style="font-weight:600;color:#3d5afe">自投简历</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px;
+                  padding:6px 12px;border-radius:6px;border:2px solid #ddd;
+                  flex:1;justify-content:center" id="imp-lbl-zhudong">
+      <input type="radio" name="import-type" value="主动搜索"
+             onchange="updateImportType()" style="accent-color:#8e44ad">
+      <span style="font-weight:600;color:#555">主动搜索</span>
+    </label>
   </div>
   <div id="import-drop-zone" style="margin:16px;border:2px dashed #c5cae9;border-radius:8px;
        padding:24px;text-align:center;cursor:pointer;color:#666;font-size:13px;transition:.2s"
@@ -237,6 +253,9 @@
 .ac.深绿{border-left:4px solid #27ae60}
 .ac.蓝色{border-left:4px solid #3498db}
 .ac.黄色{border-left:4px solid #f1c40f}
+.ac.自投{border-left:4px solid #3d5afe}
+.ac.主动搜索{border-left:4px solid #8e44ad}
+.vd-主动搜索{background:#f5eafd;color:#7d3c98}
 
 /* 卡片头：info区 + 下拉选择器 */
 .ac-head{display:flex;align-items:center;gap:6px;padding:8px 12px;flex-wrap:wrap}
@@ -432,11 +451,6 @@ function renderCard(c) {
   const nmHtml = softMismatches.map(m =>
     `<li><b>${escapeHtml(m['条件']||'')}</b>${m['条件']&&m['原因']?'：':''}${escapeHtml(m['原因']||'')}</li>`).join('');
 
-  const stageTags = stages.map(s =>
-    `<span class="stag stag-${s}">${s}</span>`).join('');
-
-  const rrInline = (stages.includes('拒绝') && c.hr_reject_reason)
-    ? `<span class="reject-reason-inline">${c.hr_reject_reason}</span>` : '';
 
   // 需求8(1): 向下拉取选择栏（在卡片头部，可见于折叠状态）
   const ddOptions = STAGE_ORDER.map(s => {
@@ -465,9 +479,7 @@ function renderCard(c) {
         <span class="ac-meta">${c.age||'?'}岁</span>
         <span class="ac-meta">${escapeHtml(c.first_degree||'')}</span>
         <span class="ac-meta">${escapeHtml(c.school||'')}</span>
-        ${['排除','自投'].includes(c.verdict) ? `<span class="ac-verdict vd-${c.verdict}">${c.verdict}</span>` : ''}
-        <span class="ac-stags">${stageTags}</span>
-        ${rrInline}
+        ${c.verdict === '排除' ? '<span class="ac-meta" style="color:#e74c3c;font-weight:600;background:#fde8e8;border-radius:4px;padding:1px 6px;">⚠ AI已重评为排除</span>' : ((['自投','主动搜索'].includes(c.verdict)) ? `<span class="ac-verdict vd-${c.verdict}">${c.verdict}</span>` : '')}
         <span class="ac-date">${(c.decision_at||'').slice(0,10)}</span>
       </span>
       <!-- 向下拉取选择栏 -->
@@ -480,13 +492,13 @@ function renderCard(c) {
       </div>
     </div>
     <div class="ac-body" id="acb-${c.evaluation_id}">
-      ${c.verdict !== '自投' ? `
+      ${!['自投','主动搜索'].includes(c.verdict) ? `
         ${mHtml  ? `<ul class="ev-list">${mHtml}</ul>`      : ''}
         ${nmHtml ? `<ul class="ev-list neg">${nmHtml}</ul>` : ''}
         ${c.verdict_reason ? `<div class="ac-reason">${c.verdict_reason}</div>` : ''}
       ` : ''}
       <div class="cc-acts" style="margin-top:8px">
-        <button class="act-go" onclick="window.open('/triage/${encodeURIComponent(JOB)}?start_id=${c.evaluation_id}','_blank')">→ 处理台</button>
+        <button class="act-go" onclick="window.open('/triage/${encodeURIComponent(JOB)}?approved_only=1&include_excluded=1&start_id=${c.evaluation_id}','_blank')">→ 处理台</button>
       </div>
     </div>
   </div>`;
@@ -693,7 +705,7 @@ function aprToggleSel(evalId, ev) {
   } else {
     const c = candidates.find(x => x.evaluation_id === evalId);
     if (!c) return;
-    aprSelected.set(evalId, { resume_id: c.resume_id, name: c.name || '未知', has_pdf: !!c.has_pdf, has_word: !!c.has_word });
+    aprSelected.set(evalId, { resume_id: c.resume_id, name: c.name || '未知', has_pdf: !!c.has_pdf, has_word: !!c.has_word, decision_at: c.decision_at || '' });
   }
   const cb   = document.getElementById('acchk-' + evalId);
   const card = document.getElementById('ac-' + evalId);
@@ -769,6 +781,7 @@ async function aprStartBgDl() {
   const items = [...aprSelected.values()].map(v => ({
     resume_id: v.resume_id,
     name: v.name,
+    date: (v.decision_at || '').slice(0, 10),
   }));
   closeBgDlModal();
 
@@ -794,6 +807,7 @@ async function aprStartExtDl() {
   const items = [...aprSelected.values()].map(v => ({
     resume_id: v.resume_id,
     name: v.name,
+    date: (v.decision_at || '').slice(0, 10),
   }));
   closeBgDlModal();
   try {
@@ -1144,11 +1158,43 @@ async function _refreshFileFlags() {
       _startBgDlPolling();
     }
   } catch (_) {}
+  try {
+    const r = await fetch('/api/agent/list');
+    const d = await r.json();
+    const extDevices = (d.devices || []).filter(dev => !dev.is_server && dev.online);
+    for (const dev of extDevices) {
+      const sr = await fetch(`/api/resume/ext_dl_status?device_id=${encodeURIComponent(dev.device_id)}`);
+      const sd = await sr.json();
+      if (sd.ok && sd.state === 'running') {
+        _currentDlMode = 'ext';
+        _startExtDlPolling(dev.device_id);
+        break;
+      }
+    }
+  } catch (_) {}
 })();
 
 // ── 导入面板 ──────────────────────────────────────────────
 let _importFiles = [];
 let _importPreviews = [];
+
+function _getImportType() {
+  return document.querySelector('input[name="import-type"]:checked')?.value || '自投';
+}
+
+function updateImportType() {
+  const type = _getImportType();
+  const isZhudong = type === '主动搜索';
+  document.getElementById('imp-lbl-zitou').style.borderColor    = isZhudong ? '#ddd' : '#3d5afe';
+  document.getElementById('imp-lbl-zitou').style.background     = isZhudong ? '' : '#eef0fd';
+  document.getElementById('imp-lbl-zhudong').style.borderColor  = isZhudong ? '#8e44ad' : '#ddd';
+  document.getElementById('imp-lbl-zhudong').style.background   = isZhudong ? '#f9eafd' : '';
+  document.getElementById('imp-lbl-zhudong').querySelector('span').style.color = isZhudong ? '#7d3c98' : '#555';
+  const bar = document.getElementById('import-confirm-bar');
+  if (bar.style.display !== 'none') {
+    bar.querySelector('button').textContent = `确认全部导入（${type}）`;
+  }
+}
 
 function openImportPanel() {
   const p = document.getElementById('import-panel');
@@ -1166,6 +1212,9 @@ function closeImportPanel() {
   document.getElementById('import-previews').innerHTML = '';
   document.getElementById('import-confirm-bar').style.display = 'none';
   document.getElementById('btn-upload-parse').disabled = true;
+  // 重置类型选择为自投
+  const radio = document.querySelector('input[name="import-type"][value="自投"]');
+  if (radio) { radio.checked = true; updateImportType(); }
 }
 
 function handleImportDrop(event) {
@@ -1209,7 +1258,9 @@ async function uploadForParsing() {
     renderImportPreviews();
     document.getElementById('import-status').textContent = `解析完成，共 ${_importPreviews.length} 份`;
     if (_importPreviews.some(p => !p.error)) {
-      document.getElementById('import-confirm-bar').style.display = 'block';
+      const bar = document.getElementById('import-confirm-bar');
+      bar.style.display = 'block';
+      bar.querySelector('button').textContent = `确认全部导入（${_getImportType()}）`;
     }
   } catch (e) {
     document.getElementById('import-status').textContent = '错误：' + e.message;
@@ -1262,7 +1313,7 @@ async function confirmImport() {
     const res = await fetch('/api/manual_import/confirm', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ job_name: JOB, items }),
+      body: JSON.stringify({ job_name: JOB, items, import_type: _getImportType() }),
     });
     const data = await res.json();
     if (!data.ok) throw new Error(data.message || '导入失败');
@@ -1272,7 +1323,8 @@ async function confirmImport() {
   } catch (e) {
     alert('导入失败：' + e.message);
   } finally {
-    btn.disabled = false; btn.textContent = '确认全部导入';
+    btn.disabled = false;
+    btn.textContent = `确认全部导入（${_getImportType()}）`;
   }
 }
 </script>

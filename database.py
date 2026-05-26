@@ -654,6 +654,14 @@ def delete_evaluations_for_job(job_id):
             DELETE FROM talent_pool WHERE evaluation_id IN
                 (SELECT id FROM evaluations WHERE job_id=?)
         """, (job_id,))
+        cur.execute("""
+            DELETE FROM correction_signals WHERE eval_id IN
+                (SELECT id FROM evaluations WHERE job_id=?)
+        """, (job_id,))
+        cur.execute("""
+            DELETE FROM preference_signals WHERE evaluation_id IN
+                (SELECT id FROM evaluations WHERE job_id=?)
+        """, (job_id,))
         cur.execute("DELETE FROM rejection_tags WHERE job_id=?", (job_id,))
         cur.execute("DELETE FROM evaluations WHERE job_id=?", (job_id,))
         cur.execute("DELETE FROM prefilter_rejects WHERE job_id=?", (job_id,))
@@ -668,6 +676,8 @@ def delete_evaluation(evaluation_id):
         cur.execute("DELETE FROM rejection_tags WHERE evaluation_id=?", (evaluation_id,))
         cur.execute("DELETE FROM hr_stage_tags WHERE evaluation_id=?", (evaluation_id,))
         cur.execute("DELETE FROM talent_pool WHERE evaluation_id=?", (evaluation_id,))
+        cur.execute("DELETE FROM correction_signals WHERE eval_id=?", (evaluation_id,))
+        cur.execute("DELETE FROM preference_signals WHERE evaluation_id=?", (evaluation_id,))
         cur.execute("DELETE FROM evaluations WHERE id=?", (evaluation_id,))
         return cur.rowcount
 
@@ -676,6 +686,11 @@ def delete_candidate(candidate_id):
     """删除候选人及其所有评估和操作记录"""
     with get_conn() as conn:
         cur = conn.cursor()
+        row = cur.execute("SELECT resume_id FROM candidates WHERE id=?",
+                          (candidate_id,)).fetchone()
+        if not row:
+            return 0
+        resume_id = row["resume_id"]
         cur.execute("""
             DELETE FROM outcomes WHERE evaluation_id IN
                 (SELECT id FROM evaluations WHERE candidate_id=?)
@@ -692,9 +707,28 @@ def delete_candidate(candidate_id):
             DELETE FROM talent_pool WHERE evaluation_id IN
                 (SELECT id FROM evaluations WHERE candidate_id=?)
         """, (candidate_id,))
+        cur.execute("""
+            DELETE FROM correction_signals WHERE eval_id IN
+                (SELECT id FROM evaluations WHERE candidate_id=?)
+        """, (candidate_id,))
+        cur.execute("""
+            DELETE FROM preference_signals WHERE evaluation_id IN
+                (SELECT id FROM evaluations WHERE candidate_id=?)
+        """, (candidate_id,))
         cur.execute("DELETE FROM evaluations WHERE candidate_id=?", (candidate_id,))
+        cur.execute("DELETE FROM prefilter_rejects WHERE resume_id=?", (resume_id,))
         cur.execute("DELETE FROM candidates WHERE id=?", (candidate_id,))
         return cur.rowcount
+
+
+def count_evaluations_for_candidate(candidate_id):
+    """返回候选人在所有岗位的评估记录数量"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM evaluations WHERE candidate_id=?",
+            (candidate_id,)
+        ).fetchone()
+        return row[0] if row else 0
 
 
 def existing_evaluation(candidate_id, job_id):
