@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>面试跟进Excel · 需求分析与方案设计</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Microsoft YaHei',system-ui,sans-serif;background:#f4f5f7;color:#2c3e50;font-size:14px;line-height:1.6}
+.page{max-width:1080px;margin:0 auto;padding:32px 24px}
+h1{font-size:22px;font-weight:700;color:#1a1a2e;border-bottom:3px solid #3d5afe;padding-bottom:12px;margin-bottom:24px}
+h2{font-size:16px;font-weight:700;color:#3d5afe;margin:32px 0 14px;display:flex;align-items:center;gap:8px}
+h2 .num{background:#3d5afe;color:#fff;width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+h3{font-size:13px;font-weight:700;color:#34495e;margin:16px 0 8px}
+p{margin:8px 0;color:#555}
+.section{background:#fff;border-radius:10px;padding:22px 24px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
+
+/* 表格 */
+table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}
+th{background:#f0f2ff;color:#3d5afe;font-weight:700;padding:9px 12px;text-align:left;border-bottom:2px solid #d0d5ff}
+td{padding:8px 12px;border-bottom:1px solid #f0f2ff;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#fafbff}
+.tag{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600}
+.ok{background:#e8f5e9;color:#2e7d32}
+.partial{background:#fff8e1;color:#f57f17}
+.no{background:#fce4ec;color:#c62828}
+.imp{background:#e8eaf6;color:#283593}
+
+/* 方案卡片 */
+.designs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin:14px 0}
+.design-card{border:2px solid #e0e0e0;border-radius:10px;overflow:hidden;position:relative}
+.design-card.rec{border-color:#3d5afe}
+.design-card .dc-head{padding:12px 14px;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:space-between}
+.design-card .dc-body{padding:14px;background:#fafbff;min-height:320px}
+.a .dc-head{background:#e8f5e9;color:#1b5e20}
+.b .dc-head{background:#e8eaf6;color:#1a237e}
+.c .dc-head{background:#fff3e0;color:#e65100}
+.rec-badge{background:#3d5afe;color:#fff;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700}
+
+/* 模拟UI */
+.mockup{border:1px solid #cdd;border-radius:6px;background:#fff;font-size:11px;overflow:hidden;margin:8px 0}
+.mockup .bar{background:#2c3e50;color:#fff;padding:5px 10px;font-size:10px;letter-spacing:.5px;display:flex;align-items:center;gap:6px}
+.mockup .bar span{background:rgba(255,255,255,.15);padding:2px 7px;border-radius:3px;cursor:pointer}
+.mockup .bar span.active{background:#3d5afe}
+.mockup .body{padding:10px}
+.mockup .row{display:flex;gap:6px;margin-bottom:6px;align-items:flex-start}
+.mockup .card{border:1px solid #e0e0e0;border-radius:5px;padding:7px 9px;flex:1;background:#fff}
+.mockup .card .name{font-weight:700;font-size:11px;color:#2c3e50;margin-bottom:4px}
+.mockup .card .tags{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px}
+.mockup .card .tag2{background:#e8eaf6;color:#3d5afe;padding:1px 5px;border-radius:3px;font-size:10px}
+.mockup .card .tag2.green{background:#e8f5e9;color:#2e7d32}
+.mockup .card .tag2.red{background:#fce4ec;color:#c62828}
+.mockup .card .field{font-size:10px;color:#888;margin-bottom:2px}
+.mockup .card input{border:1px solid #ddd;border-radius:3px;padding:2px 5px;font-size:10px;width:120px;color:#555}
+.mockup .card .btn2{background:#3d5afe;color:#fff;border:none;border-radius:3px;padding:2px 7px;font-size:10px;cursor:pointer;margin-right:4px}
+.mockup .card .btn2.gray{background:#95a5a6}
+.mockup .side{width:90px;border:1px solid #e0e0e0;border-radius:5px;padding:7px;background:#f8f9fa;flex-shrink:0}
+.mockup .side .st{font-size:9px;font-weight:700;color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+.mockup .side .srow{font-size:10px;color:#555;display:flex;justify-content:space-between;margin-bottom:2px}
+.mockup .side .srow .snum{color:#3d5afe;font-weight:700}
+.mockup .tbl{width:100%;font-size:10px;border-collapse:collapse}
+.mockup .tbl th{background:#e8eaf6;color:#3d5afe;padding:4px 6px;text-align:left}
+.mockup .tbl td{padding:3px 6px;border-bottom:1px solid #f0f2ff;color:#555}
+.mockup .tbl tr.green td{background:#f1f8e9}
+.mockup .tbl tr.gray td{background:#f5f5f5;color:#bbb}
+.mockup .tbl tr.blue td{background:#e8eaf6}
+.mockup .export-btn{background:#27ae60;color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:10px;cursor:pointer;float:right;margin-bottom:6px}
+.mockup .tab-bar{display:flex;gap:1px;background:#e0e0e0;padding:0}
+.mockup .tab-bar .tab{padding:5px 10px;font-size:10px;background:#f5f5f5;cursor:pointer;color:#888}
+.mockup .tab-bar .tab.active{background:#fff;color:#3d5afe;font-weight:700}
+
+/* 攻击分析 */
+.attacks{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin:12px 0}
+.attack-card{border:1px solid #ffcdd2;border-radius:8px;background:#fff9f9;padding:14px}
+.attack-card h4{color:#c62828;font-size:12px;margin-bottom:8px;display:flex;align-items:center;gap:5px}
+.attack-card ul{list-style:none;padding:0}
+.attack-card ul li{font-size:11px;color:#666;padding:3px 0;border-bottom:1px solid #ffecec;display:flex;gap:5px}
+.attack-card ul li:last-child{border:none}
+.attack-card ul li::before{content:"⚠";color:#e74c3c;flex-shrink:0}
+
+/* 问题清单 */
+.problems{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+.prob{border-left:3px solid #f39c12;background:#fffbf0;padding:10px 14px;border-radius:0 6px 6px 0}
+.prob.red{border-color:#e74c3c;background:#fff9f9}
+.prob.blue{border-color:#3d5afe;background:#f0f2ff}
+.prob h4{font-size:12px;font-weight:700;margin-bottom:4px;color:#2c3e50}
+.prob p{font-size:11px;color:#666;margin:0}
+
+/* Excel对比 */
+.excel-compare{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:12px 0}
+.excel-box{border:1px solid #ddd;border-radius:8px;overflow:hidden}
+.excel-box .ex-head{padding:9px 14px;font-size:12px;font-weight:700}
+.excel-box .ex-head.old{background:#ffebee;color:#c62828}
+.excel-box .ex-head.new{background:#e8f5e9;color:#2e7d32}
+.excel-box .ex-body{padding:10px 14px;font-size:11px;color:#555}
+.excel-box .ex-body li{padding:3px 0;border-bottom:1px solid #f5f5f5;display:flex;gap:6px}
+.excel-box .ex-body li::before{content:"·";color:#bbb}
+.excel-box .ex-body li.g::before{content:"✓";color:#27ae60}
+.excel-box .ex-body li.r::before{content:"✗";color:#e74c3c}
+.excel-box .ex-body li.y::before{content:"△";color:#f39c12}
+
+.legend{display:flex;gap:16px;margin:8px 0;font-size:11px;flex-wrap:wrap}
+.legend span{display:flex;align-items:center;gap:4px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+
+.summary-box{background:linear-gradient(135deg,#3d5afe11,#00c85311);border:1px solid #3d5afe33;border-radius:8px;padding:14px 18px;margin:16px 0}
+.summary-box h4{color:#3d5afe;font-size:13px;font-weight:700;margin-bottom:6px}
+.summary-box p{font-size:12px;color:#555;margin:3px 0}
+
+.gap-warn{background:#fff8e1;border:1px solid #ffc107;border-radius:6px;padding:10px 14px;margin:10px 0;font-size:12px;color:#795548}
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>面试跟进Excel · 需求分析与方案设计报告</h1>
+<p style="color:#888;font-size:12px;margin-bottom:4px">生成于 2026-05-29 · 分析对象：D:\51job\51job</p>
+
+<!-- ═══ 第一部分：需求确认 ═══ -->
+<h2><span class="num">1</span> 需求确认 · 我理解你的目标是什么</h2>
+<div class="section">
+  <p>你希望 <b>通过页面的阶段操作（已一面/已二面/签批中/已入职…）</b> 与 <b>一张Excel周报</b> 形成实时联动——HR在页面上更新了进展，Excel里的数据就随之改变，随时可以导出一份干净的跟进表交给领导或存档，而不是每周手工往Excel里填数据。</p>
+  <p style="margin-top:8px">你的顾虑可能在于：<b>手工维护Excel太累且容易出错</b>（两个地方改同一份数据）；同时担心系统里缺少某些字段，导致这件事做不了或做出来不完整。</p>
+  <div class="summary-box">
+    <h4>结论预告</h4>
+    <p>你想要的东西 <b>可以做</b>，核心数据（姓名/年龄/学历/阶段/专业）已经在库里了，系统当前缺少 4 个字段的存储（面试时间、需求部门、简历来源、入职时间），需要针对性补充，补完后可以一键生成符合你现有表格格式的Excel。</p>
+  </div>
+</div>
+
+<!-- ═══ 第二部分：字段可行性 ═══ -->
+<h2><span class="num">2</span> 字段可行性分析 · 哪些能自动填，哪些还差</h2>
+<div class="section">
+  <div class="legend">
+    <span><span class="dot" style="background:#2e7d32"></span>已在数据库，可直接生成</span>
+    <span><span class="dot" style="background:#f57f17"></span>部分可用，需少量补充</span>
+    <span><span class="dot" style="background:#c62828"></span>未存储，需新增字段+UI</span>
+  </div>
+  <table>
+    <thead><tr><th>Excel列</th><th>当前数据来源</th><th>状态</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><b>状态</b>（已入职/待入职/面试中/不合适）</td><td>hr_stage_tags.stages_json → 最高阶段推导</td><td><span class="tag ok">✓ 可用</span></td><td>已一面/已二面/谈薪中/签批中 → 面试中；已入职/待入职 直接映射</td></tr>
+      <tr><td><b>姓名</b></td><td>candidates.name</td><td><span class="tag ok">✓ 可用</span></td><td>AI提取自简历</td></tr>
+      <tr><td><b>应聘岗位</b></td><td>jobs.name</td><td><span class="tag ok">✓ 可用</span></td><td>直接读取</td></tr>
+      <tr><td><b>年龄</b></td><td>candidates.age</td><td><span class="tag ok">✓ 可用</span></td><td>AI提取自简历</td></tr>
+      <tr><td><b>学历</b></td><td>candidates.first_degree</td><td><span class="tag ok">✓ 可用</span></td><td>AI提取自简历</td></tr>
+      <tr><td><b>毕业院校/专业</b></td><td>candidates.school + candidates.major</td><td><span class="tag ok">✓ 可用</span></td><td>AI提取，拼接即可</td></tr>
+      <tr><td><b>简历PDF</b></td><td>文件系统已有；has_pdf 字段</td><td><span class="tag partial">△ 部分</span></td><td>不能嵌入Excel（文件太大）；可以生成超链接 或 ✓/✗ 标记</td></tr>
+      <tr><td><b>面试时间</b></td><td>— 未存储</td><td><span class="tag no">✗ 缺失</span></td><td>需在通过页加日期时间输入框，写入新字段</td></tr>
+      <tr><td><b>需求部门</b></td><td>— 未存储（岗位配置里无部门字段）</td><td><span class="tag no">✗ 缺失</span></td><td>需在岗位设置加部门字段。注意：一个岗位可能对多个部门招聘</td></tr>
+      <tr><td><b>简历来源</b></td><td>candidates.source = 'scraped'/'manual'，无平台名</td><td><span class="tag no">✗ 缺失</span></td><td>爬取的可默认"前程无忧"；手动导入时需加来源选择</td></tr>
+      <tr><td><b>入职时间</b></td><td>— 未存储</td><td><span class="tag no">✗ 缺失</span></td><td>选中"已入职"阶段时触发输入框，存入新字段</td></tr>
+    </tbody>
+  </table>
+  <p style="font-size:12px;color:#888;margin-top:8px">当前可自动填充：<b>7 / 11 列</b>；缺失 4 列，均可通过新增字段+小改UI补全。</p>
+</div>
+
+<!-- ═══ 第三部分：应用当前缺少什么 ═══ -->
+<h2><span class="num">3</span> 应用当前缺少什么</h2>
+<div class="section">
+  <div class="problems">
+    <div class="prob red">
+      <h4>① 数据库缺少 3 个字段</h4>
+      <p>hr_stage_tags 表需新增：<code>interview_time</code>（面试时间）、<code>join_date</code>（入职时间）；jobs 表（或 config_json）需新增 <code>department</code>（需求部门）</p>
+    </div>
+    <div class="prob red">
+      <h4>② 简历来源无平台信息</h4>
+      <p>candidates.source 只区分 scraped / manual，不记录"猎聘""BOSS直聘""自投"等。手动导入面板没有来源选择器。</p>
+    </div>
+    <div class="prob">
+      <h4>③ 通过页面无时间输入入口</h4>
+      <p>当前阶段标签是多选下拉，没有日期选择器。HR无法在页面里记录"这个人是哪天面试的"</p>
+    </div>
+    <div class="prob">
+      <h4>④ 没有Excel导出路由</h4>
+      <p>缺少 <code>/export/interview_tracker/&lt;job_name&gt;</code> 路由，以及用 openpyxl 生成表格的逻辑</p>
+    </div>
+    <div class="prob blue">
+      <h4>⑤ PDF文件无法嵌入Excel</h4>
+      <p>简历PDF若要放进Excel只能做超链接（指向本机/局域网路径），嵌入原文件会导致Excel几十MB，不可用</p>
+    </div>
+    <div class="prob blue">
+      <h4>⑥ 周次管理未定义</h4>
+      <p>"第22周"的边界是什么？按面试时间？按加入系统时间？按导出日期？需要明确规则，否则每周的范围不一致</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 第四部分：三种设计方案 ═══ -->
+<h2><span class="num">4</span> 三种工作流设计方案</h2>
+<div class="section">
+  <p style="margin-bottom:14px">以下三种方案覆盖从<b>最小改动</b>到<b>完整功能</b>的范围，你可以根据实际使用习惯选择。</p>
+  <div class="designs">
+
+    <!-- 方案A -->
+    <div class="design-card a">
+      <div class="dc-head">方案 A · 通过页增强 <small style="font-weight:400;font-size:11px">最小改动</small></div>
+      <div class="dc-body">
+        <p style="font-size:11px;color:#555;margin-bottom:10px">在现有通过页面的候选人卡片里增加字段输入，导出按钮放在页面顶部。HR 不需要切换页面，所有操作集中在一处。</p>
+        <div class="mockup">
+          <div class="bar">
+            ← 首页 &nbsp;|&nbsp; 质量工程师 · 通过简历 &nbsp;
+            <span>导入简历</span>
+            <span class="active" style="background:#27ae60">↓ 导出跟进表</span>
+          </div>
+          <div class="body">
+            <div class="row">
+              <div class="card" style="flex:1">
+                <div class="name">余艳姣 <span style="color:#888;font-weight:400;font-size:10px">35岁 · 本科</span></div>
+                <div class="tags">
+                  <span class="tag2">已约面</span>
+                  <span class="tag2 green">✓ 已一面</span>
+                </div>
+                <div class="field">面试时间：<input type="text" value="5月28日 16:00" style="width:100px"></div>
+                <div class="field" style="margin-top:3px">入职时间：<input type="text" placeholder="待定" style="width:100px"></div>
+                <div style="margin-top:5px;display:flex;gap:4px">
+                  <button class="btn2">简历PDF</button>
+                </div>
+              </div>
+              <div class="side">
+                <div class="st">阶段统计</div>
+                <div class="srow">已一面 <span class="snum">3</span></div>
+                <div class="srow">签批中 <span class="snum">2</span></div>
+                <div class="srow">已入职 <span class="snum">1</span></div>
+              </div>
+            </div>
+            <div class="row">
+              <div class="card">
+                <div class="name">李盈盈 <span style="color:#888;font-weight:400;font-size:10px">27岁 · 本科</span></div>
+                <div class="tags"><span class="tag2">已联系</span></div>
+                <div class="field">面试时间：<input type="text" placeholder="点击选择" style="width:100px"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <h3 style="margin-top:10px">操作流程</h3>
+        <p style="font-size:11px;color:#555">① 在通过页打标（已一面…）→ ② 卡片内填写面试时间 → ③ 点击"导出跟进表"</p>
+        <h3>适合场景</h3>
+        <p style="font-size:11px;color:#555">操作习惯已固化、不想学新页面、每次只看一个岗位</p>
+      </div>
+    </div>
+
+    <!-- 方案B -->
+    <div class="design-card b rec">
+      <div class="dc-head">方案 B · 独立跟进台 <span class="rec-badge">推荐</span></div>
+      <div class="dc-body">
+        <p style="font-size:11px;color:#555;margin-bottom:10px">新建一个跟进台页面（/tracker），以表格形式汇总所有岗位的通过候选人，支持跨岗位查看、内联编辑、按周导出。</p>
+        <div class="mockup">
+          <div class="bar">
+            ← 首页
+            <span class="active">面试跟进台</span>
+            <span>筛选：第22周 ▼</span>
+          </div>
+          <div class="body" style="padding:8px">
+            <button class="export-btn">↓ 导出本周Excel</button>
+            <table class="tbl">
+              <thead><tr><th>姓名</th><th>应聘岗位</th><th>面试结果</th><th>面试时间</th><th>入职时间</th><th>PDF</th></tr></thead>
+              <tbody>
+                <tr class="green"><td>张文元</td><td>PMC</td><td>已入职</td><td>5月8日</td><td>5月16日</td><td>✓</td></tr>
+                <tr class="blue"><td>余艳姣</td><td>体系工程师</td><td>已一面</td><td>5月28日</td><td>—</td><td>✓</td></tr>
+                <tr class="blue"><td>夏伟</td><td>模具设计</td><td>待谈薪</td><td>5月19日</td><td>—</td><td>✓</td></tr>
+                <tr class="gray"><td>蓝嘉昕</td><td>生技工程师</td><td>不合适</td><td>5月26日</td><td>—</td><td>✓</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <h3 style="margin-top:10px">操作流程</h3>
+        <p style="font-size:11px;color:#555">① 通过页打标（已一面…）→ ② 进跟进台填面试时间/入职时间 → ③ 选择周次→ ④ 导出Excel</p>
+        <h3>适合场景</h3>
+        <p style="font-size:11px;color:#555">多岗位同时跟进、需要跨岗位汇总、定期生成周报</p>
+      </div>
+    </div>
+
+    <!-- 方案C -->
+    <div class="design-card c">
+      <div class="dc-head">方案 C · 驾驶舱周报Tab <small style="font-weight:400;font-size:11px">完整整合</small></div>
+      <div class="dc-body">
+        <p style="font-size:11px;color:#555;margin-bottom:10px">在驾驶舱增加"周报"Tab，与现有5个阶段Tab并列，提供全岗位视图+导出入口，一站式完成所有操作。</p>
+        <div class="mockup">
+          <div class="bar">驾驶舱 · 华阳精机</div>
+          <div class="tab-bar">
+            <span class="tab">全部</span>
+            <span class="tab">深绿</span>
+            <span class="tab">浅绿</span>
+            <span class="tab">黄色</span>
+            <span class="tab">排除</span>
+            <span class="tab active">📋 周报</span>
+          </div>
+          <div class="body" style="padding:8px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span style="font-size:10px;color:#888">第22周 (5月25日-5月31日)</span>
+              <button class="export-btn" style="float:none;margin:0">↓ 导出Excel</button>
+            </div>
+            <table class="tbl">
+              <thead><tr><th>姓名</th><th>岗位</th><th>状态</th><th>面试时间</th></tr></thead>
+              <tbody>
+                <tr class="green"><td>张文元</td><td>PMC</td><td>已入职</td><td>5月8日</td></tr>
+                <tr class="blue"><td>余艳姣</td><td>体系</td><td>已一面</td><td>5月28日</td></tr>
+                <tr class="blue"><td>宋先生</td><td>AI工程师</td><td>已一面</td><td>5月22日</td></tr>
+                <tr class="gray"><td>蓝嘉昕</td><td>生技</td><td>不合适</td><td>5月26日</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <h3 style="margin-top:10px">操作流程</h3>
+        <p style="font-size:11px;color:#555">① 通过页打标 → ② 驾驶舱切换到"周报"Tab → ③ 直接在周报里填时间 → ④ 导出</p>
+        <h3>适合场景</h3>
+        <p style="font-size:11px;color:#555">习惯从驾驶舱总览、不喜欢跳转页面、管理者视角</p>
+      </div>
+    </div>
+
+  </div><!-- end designs -->
+</div>
+
+<!-- ═══ 第五部分：方案攻击分析（找漏洞）═══ -->
+<h2><span class="num">5</span> 方案攻击分析 · 每个方案的潜在漏洞</h2>
+<div class="section">
+  <p style="margin-bottom:12px">以下是主动找出的各方案问题，作为选型参考：</p>
+  <div class="attacks">
+    <div class="attack-card">
+      <h4>⚔ 方案A · 通过页增强</h4>
+      <ul>
+        <li>卡片已经很密，再加时间输入框会更拥挤，在手机或小屏幕上几乎不可用</li>
+        <li>每个岗位分开看，无法在一个界面汇总所有岗位的候选人，每次导出要分别进入每个岗位页面</li>
+        <li>面试时间是文本输入还是日期控件？文本格式不统一（"5月8日""05/08""2026-05-08"），程序无法按日期排序和筛选</li>
+        <li>导出按钮只能导出当前岗位，如果要跨岗位汇总，需要多次操作</li>
+      </ul>
+    </div>
+    <div class="attack-card">
+      <h4>⚔ 方案B · 独立跟进台（推荐）</h4>
+      <ul>
+        <li>阶段标签在通过页改，时间在跟进台改，有两个入口操作同一个人的不同字段，HR需要在两个页面之间来回切换</li>
+        <li>跟进台的数据和通过页要保持实时同步，如果通过页把某人改成了"拒绝"，跟进台需要立即刷新，否则产生数据不一致的视觉</li>
+        <li>跟进台是按"周"筛选，但"周"的判断基准不明确：以面试时间算？还是以加入系统时间算？如果候选人这周面试但下周才打上"已一面"标签，算哪周？</li>
+        <li>多岗位同名候选人在表格里会出现多行，HR可能认为是数据错误</li>
+      </ul>
+    </div>
+    <div class="attack-card">
+      <h4>⚔ 方案C · 驾驶舱周报Tab</h4>
+      <ul>
+        <li>驾驶舱原来的Tab逻辑是"按AI评分分类"（深绿/浅绿/黄色），周报Tab的逻辑是"按HR进展分类"，两套逻辑混在同一个页面，概念会混乱</li>
+        <li>驾驶舱当前按岗位切换，周报需要跨岗位，视角不一致，可能导致"我在看A岗的驾驶舱，周报Tab里却显示所有岗位"的困惑</li>
+        <li>驾驶舱已有5个Tab，再加一个Tab会让导航栏更长，在移动端可能挤不下</li>
+        <li>驾驶舱是给做筛选的人用的，周报是给汇报用的，使用场景不同，放在一起会让操作目的模糊</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 style="margin-top:16px">所有方案共同存在的隐患</h3>
+  <div class="problems" style="margin-top:8px">
+    <div class="prob red">
+      <h4>需求部门的一对多问题</h4>
+      <p>质量工程师同时对铝合金一部、二部、三部开放，但系统里一个岗位只有一个配置。同一候选人可能被推荐给不同部门，目前无法区分。</p>
+    </div>
+    <div class="prob red">
+      <h4>简历PDF超链接跨设备失效</h4>
+      <p>PDF文件存在服务器本地磁盘，Excel里的超链接只在服务器电脑上有效，其他设备打开Excel时链接失效。</p>
+    </div>
+    <div class="prob">
+      <h4>历史周报版本管理</h4>
+      <p>每次导出都是当前状态的快照。如果要对比第21周和第22周，需要在服务器保存历史文件，否则上周的Excel被覆盖后无法还原。</p>
+    </div>
+    <div class="prob">
+      <h4>面试时间格式标准化</h4>
+      <p>HR习惯写"5月28日16:00"，程序若要按日期排序必须用标准日期格式（如2026-05-28），需要在UI层做约束或转换。</p>
+    </div>
+    <div class="prob blue">
+      <h4>已通过但后来不合适的候选人</h4>
+      <p>通过页的候选人在打了"拒绝"标签后，是否还出现在跟进表里？需要明确规则：拒绝 = 从跟进表消失，还是留着标记为"不合适"。</p>
+    </div>
+    <div class="prob blue">
+      <h4>手动导入候选人来源缺失</h4>
+      <p>自投/猎头/BOSS直聘的候选人是手动导入的，系统没有记录来源平台，会导致简历来源这一列大量空白。</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 第六部分：Excel输出格式建议 ═══ -->
+<h2><span class="num">6</span> Excel输出格式是否需要修改</h2>
+<div class="section">
+  <p style="margin-bottom:12px">对比你现有的Excel和建议的自动生成格式：</p>
+  <div class="excel-compare">
+    <div class="excel-box">
+      <div class="ex-head old">现有手工Excel（问题）</div>
+      <div class="ex-body">
+        <ul>
+          <li class="r">Sheet名"第22周"但标题行写"第21周"（命名不一致）</li>
+          <li class="r">实际只用约13列，但文件存在1227列（格式噪音）</li>
+          <li class="r">两个Sheet（岗位需求+面试跟进）各自独立，需手动同步</li>
+          <li class="r">状态列有大量空白行（视觉合并单元格的副作用）</li>
+          <li class="r">"简历"列存的是Excel日期序列号（46157），不是超链接</li>
+          <li class="r">无颜色分组，已入职/面试中/不合适视觉上没有区别</li>
+        </ul>
+      </div>
+    </div>
+    <div class="excel-box">
+      <div class="ex-head new">建议的自动生成格式</div>
+      <div class="ex-body">
+        <ul>
+          <li class="g">Sheet名和标题行自动一致，使用面试时间周次命名</li>
+          <li class="g">列宽自动适配内容，无冗余列</li>
+          <li class="g">已入职 → 绿色行；不合适 → 灰色行；面试中 → 蓝色行</li>
+          <li class="g">简历PDF列生成超链接（点击跳转）或✓/✗标记</li>
+          <li class="g">按"状态优先级 + 面试时间"自动排序</li>
+          <li class="y">两个Sheet可选：只生成面试跟进，或同时生成岗位汇总</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="gap-warn">
+    <b>关于PDF嵌入的特别说明：</b>将简历PDF直接嵌入Excel会导致文件体积达到几十MB，发邮件/微信发送都会失败。更实用的方案是：在Excel里加一列超链接（指向局域网文件路径），或者在通过页面单独提供"一键打包所有PDF为ZIP"的下载功能。
+  </div>
+</div>
+
+<!-- ═══ 第七部分：方案对比矩阵 ═══ -->
+<h2><span class="num">7</span> 方案对比矩阵</h2>
+<div class="section">
+  <table>
+    <thead>
+      <tr><th>维度</th><th>方案A（通过页增强）</th><th>方案B（独立跟进台）★</th><th>方案C（驾驶舱Tab）</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>改动工作量</td><td><span class="tag ok">最小</span></td><td><span class="tag partial">中等</span></td><td><span class="tag no">最大</span></td></tr>
+      <tr><td>跨岗位汇总</td><td><span class="tag no">不支持</span></td><td><span class="tag ok">原生支持</span></td><td><span class="tag ok">支持</span></td></tr>
+      <tr><td>与现有习惯的兼容性</td><td><span class="tag ok">最好</span></td><td><span class="tag partial">需适应新页面</span></td><td><span class="tag partial">需适应新Tab</span></td></tr>
+      <tr><td>信息密度（是否拥挤）</td><td><span class="tag no">卡片更拥挤</span></td><td><span class="tag ok">表格视图清晰</span></td><td><span class="tag ok">表格视图清晰</span></td></tr>
+      <tr><td>周报导出便利性</td><td><span class="tag partial">需逐岗位操作</span></td><td><span class="tag ok">一次导出全部</span></td><td><span class="tag ok">一次导出全部</span></td></tr>
+      <tr><td>概念清晰度</td><td><span class="tag ok">清晰</span></td><td><span class="tag ok">清晰（专门页面）</span></td><td><span class="tag no">易与AI评分混淆</span></td></tr>
+      <tr><td>移动端可用性</td><td><span class="tag no">较差（卡片更密）</span></td><td><span class="tag partial">可接受</span></td><td><span class="tag no">导航栏过长</span></td></tr>
+    </tbody>
+  </table>
+  <div class="summary-box" style="margin-top:16px">
+    <h4>建议选择方案B，原因：</h4>
+    <p>通过页面承担的是"AI筛选→HR决策"这个职责，跟进台承担的是"面试过程记录→周报输出"这个职责，两个职责本来就不同，拆成两个页面是合理的，不会产生概念混乱。方案B也是唯一能天然支持"跨岗位一次性导出"的设计。</p>
+    <p style="margin-top:4px">如果你希望<b>改动最小</b>、维持现有操作习惯，选方案A——但每次只能导一个岗位的Excel，每周需要手动合并多个文件。</p>
+    <p style="margin-top:4px">方案C改动最大，且在概念上有混淆风险，暂不推荐。</p>
+  </div>
+</div>
+
+<p style="font-size:11px;color:#bbb;text-align:center;margin-top:24px;padding-top:12px;border-top:1px solid #eee">分析基于 D:\51job\51job 代码库现状 · 2026-05-29 · 仅供决策参考，不修改任何代码</p>
+</div>
+</body>
+</html>

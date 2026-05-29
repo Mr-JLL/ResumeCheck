@@ -30,38 +30,69 @@
 {% block scripts %}
 <style>
 .pool-sel{padding:5px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;cursor:pointer}
-.pool-card{border:1px solid #e8e8e8;border-radius:8px;background:#fff;
-           padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;
-           gap:12px;flex-wrap:wrap}
-.pool-card.overdue{border-left:4px solid #e74c3c;background:#fff9f9}
-.pool-card.due-today{border-left:4px solid #e67e22;background:#fffdf5}
-.pool-card.future{border-left:4px solid #3498db}
-.pool-card.contacted{border-left:4px solid #27ae60;opacity:.8}
-.pool-card.closed{border-left:4px solid #ccc;opacity:.6}
-.pool-name{font-weight:700;font-size:14px;min-width:64px}
-.pool-job{font-size:12px;color:#777;background:#f0f0f0;padding:1px 8px;border-radius:10px}
-.pool-reason{font-size:12px;color:#555;background:#fff3cd;padding:1px 8px;border-radius:10px}
-.pool-date{font-size:12px;font-weight:700;white-space:nowrap}
+
+/* 折叠卡片 */
+.pool-card{border:1px solid #e8e8e8;border-radius:8px;background:#fff;margin-bottom:8px;overflow:hidden}
+.pool-card.overdue  {border-left:4px solid #e74c3c}
+.pool-card.today    {border-left:4px solid #e67e22}
+.pool-card.future   {border-left:4px solid #3498db}
+.pool-card.contacted{border-left:4px solid #27ae60;opacity:.85}
+.pool-card.closed   {border-left:4px solid #ccc;opacity:.6}
+
+/* 头部（始终可见） */
+.pool-head{display:flex;align-items:center;gap:8px;padding:10px 14px;flex-wrap:wrap;
+           cursor:pointer;user-select:none}
+.pool-head:hover{background:#fafafa}
+.pool-toggle{font-size:10px;color:#aaa;flex-shrink:0;transition:transform .15s;
+             width:12px;text-align:center}
+.pool-card.open .pool-toggle{transform:rotate(90deg)}
+
+.pool-name{font-weight:700;font-size:14px;min-width:56px;flex-shrink:0}
+.pool-meta{font-size:11px;color:#aaa;white-space:nowrap}
+.pool-job{font-size:11px;color:#777;background:#f0f0f0;padding:1px 8px;border-radius:10px;white-space:nowrap}
+.pool-tag-reason{font-size:11px;color:#555;background:#fff3cd;padding:1px 8px;border-radius:10px;white-space:nowrap}
+.pool-date{font-size:12px;font-weight:700;white-space:nowrap;flex-shrink:0}
 .pool-date.overdue{color:#e74c3c}
 .pool-date.today{color:#e67e22}
 .pool-date.future{color:#3498db}
-.pool-note{font-size:11px;color:#999;flex:1;min-width:120px;font-style:italic}
-.pool-acts{display:flex;gap:5px;flex-wrap:wrap;margin-left:auto}
+.pool-note{font-size:11px;color:#999;font-style:italic;flex:1;min-width:80px;
+           overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+
+.pool-acts{display:flex;gap:5px;flex-wrap:wrap;flex-shrink:0;margin-left:auto}
 .pool-acts button{padding:3px 10px;border:none;border-radius:4px;font-size:12px;
                   cursor:pointer;font-weight:600}
-.pa-contacted{background:#27ae60;color:#fff}
-.pa-edit{background:#3498db;color:#fff}
-.pa-close{background:#e67e22;color:#fff}
-.pa-remove{background:#e74c3c;color:#fff}
+.pa-contacted {background:#27ae60;color:#fff}
+.pa-edit      {background:#3498db;color:#fff}
+.pa-close     {background:#e67e22;color:#fff}
+.pa-remove    {background:#e74c3c;color:#fff}
 .pa-reactivate{background:#8e44ad;color:#fff}
+
+/* 展开体（默认隐藏） */
+.pool-body{display:none;padding:8px 14px 12px;border-top:1px solid #f0f0f0}
+.pool-card.open .pool-body{display:block}
+.ev-list{font-size:12px;color:#555;margin:4px 0;padding-left:14px}
+.ev-list.neg{color:#c0392b}
+.ev-list li{margin:2px 0}
+.pool-reason-text{font-size:11px;color:#777;margin-top:4px;font-style:italic}
+.pool-manual-hint{font-size:12px;color:#aaa;font-style:italic;padding:4px 0}
+
+/* 展开体底部跳转按钮 */
+.pool-nav-acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.pool-nav-acts a,.pool-nav-acts button{
+  padding:4px 14px;border-radius:5px;font-size:12px;font-weight:600;
+  cursor:pointer;text-decoration:none;border:none;display:inline-block}
+.pa-triage  {background:#2c3e50;color:#fff}
+.pa-approved{background:#27ae60;color:#fff}
+
+/* 分组标题 */
 .pool-section-title{font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;
                     letter-spacing:.6px;padding:6px 0 4px;border-bottom:1px solid #eee;
                     margin:14px 0 8px}
 </style>
 
-<!-- 放入/编辑 人才池 Modal（公用） -->
+<!-- 放入/编辑 人才池 Modal -->
 <div id="pool-modal" style="display:none;position:fixed;inset:0;
-     background:rgba(0,0,0,.45);z-index:1000;display:none;align-items:center;justify-content:center">
+     background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center">
   <div style="background:#fff;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.25);
               padding:22px 24px;width:360px;max-width:95vw">
     <div style="font-size:15px;font-weight:700;color:#2c3e50;margin-bottom:14px">
@@ -91,7 +122,7 @@
               border-radius:5px;background:#f5f6fa;cursor:pointer;font-size:13px">取消</button>
       <button onclick="submitPoolModal()" style="padding:6px 18px;border:none;border-radius:5px;
               background:#8e44ad;color:#fff;cursor:pointer;font-size:13px;font-weight:600">
-        确认放入人才池
+        确认
       </button>
     </div>
   </div>
@@ -100,54 +131,49 @@
 <script>
 const TODAY = new Date().toISOString().slice(0,10);
 let _pmEvalId = null;
+let _poolMap  = {};  // evaluation_id → entry，避免 onclick 嵌入 JSON
 
 async function loadPool() {
-  const job = document.getElementById('f-job').value;
+  const job    = document.getElementById('f-job').value;
   const status = document.getElementById('f-status').value;
   let url = `/api/talent_pool/list?status=${encodeURIComponent(status)}`;
   if (job) url += `&job_name=${encodeURIComponent(job)}`;
   const r = await fetch(url);
   const d = await r.json();
-  const cnt = document.getElementById('pool-count');
-  cnt.textContent = `共 ${d.count} 人`;
+  document.getElementById('pool-count').textContent = `共 ${d.count} 人`;
   if (!d.count) {
     document.getElementById('pool-list').innerHTML =
       '<div style="text-align:center;color:#bbb;padding:40px">人才池暂无记录</div>';
+    _poolMap = {};
     return;
   }
 
-  // 分组：逾期 / 今天 / 将来 / 已联系 / 已关闭
+  // 构建安全查找表
+  _poolMap = {};
+  for (const e of d.entries) _poolMap[e.evaluation_id] = e;
+
+  // 分组
   const overdue=[], today=[], future=[], contacted=[], closed=[];
   for (const e of d.entries) {
-    if (e.status === 'contacted') contacted.push(e);
-    else if (e.status === 'closed') closed.push(e);
-    else if (e.recontact_date < TODAY) overdue.push(e);
-    else if (e.recontact_date === TODAY) today.push(e);
-    else future.push(e);
+    if      (e.status === 'contacted')        contacted.push(e);
+    else if (e.status === 'closed')           closed.push(e);
+    else if (e.recontact_date < TODAY)        overdue.push(e);
+    else if (e.recontact_date === TODAY)      today.push(e);
+    else                                      future.push(e);
   }
 
   let html = '';
-  if (overdue.length) {
-    html += `<div class="pool-section-title">⚠ 已逾期 (${overdue.length})</div>`;
-    html += overdue.map(e => renderCard(e, 'overdue')).join('');
-  }
-  if (today.length) {
-    html += `<div class="pool-section-title">🔔 今天需联系 (${today.length})</div>`;
-    html += today.map(e => renderCard(e, 'today')).join('');
-  }
-  if (future.length) {
-    html += `<div class="pool-section-title">📅 未来计划 (${future.length})</div>`;
-    html += future.map(e => renderCard(e, 'future')).join('');
-  }
-  if (contacted.length) {
-    html += `<div class="pool-section-title">✓ 已联系 (${contacted.length})</div>`;
-    html += contacted.map(e => renderCard(e, 'contacted')).join('');
-  }
-  if (closed.length) {
-    html += `<div class="pool-section-title">已关闭 (${closed.length})</div>`;
-    html += closed.map(e => renderCard(e, 'closed')).join('');
-  }
+  if (overdue.length)   { html += `<div class="pool-section-title">⚠ 已逾期 (${overdue.length})</div>`; html += overdue.map(e => renderCard(e,'overdue')).join(''); }
+  if (today.length)     { html += `<div class="pool-section-title">🔔 今天需联系 (${today.length})</div>`; html += today.map(e => renderCard(e,'today')).join(''); }
+  if (future.length)    { html += `<div class="pool-section-title">📅 未来计划 (${future.length})</div>`; html += future.map(e => renderCard(e,'future')).join(''); }
+  if (contacted.length) { html += `<div class="pool-section-title">✓ 已联系 (${contacted.length})</div>`; html += contacted.map(e => renderCard(e,'contacted')).join(''); }
+  if (closed.length)    { html += `<div class="pool-section-title">已关闭 (${closed.length})</div>`; html += closed.map(e => renderCard(e,'closed')).join(''); }
   document.getElementById('pool-list').innerHTML = html;
+}
+
+function escH(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function renderCard(e, cls) {
@@ -156,27 +182,73 @@ function renderCard(e, cls) {
   const vStyle = e.verdict==='深绿' ? 'background:#d5f5e3;color:#1e8449'
                : e.verdict==='蓝色' ? 'background:#d6eaf8;color:#2471a3'
                : 'background:#fef9e7;color:#b7950b';
-
   const isActive = e.status === 'active';
+
+  // 操作按钮 — onclick 只传 id，数据从 _poolMap 读取，不嵌入 JSON
   const actHtml = isActive ? `
-    <button class="pa-contacted" onclick="markStatus(${e.evaluation_id},'contacted')">✓ 已联系</button>
-    <button class="pa-edit" onclick="openPoolModal(${e.evaluation_id},${JSON.stringify(e.name)},${JSON.stringify(e)})">编辑</button>
-    <button class="pa-close" onclick="markStatus(${e.evaluation_id},'closed')">关闭</button>
-    <button class="pa-remove" onclick="removeEntry(${e.evaluation_id})">移除</button>
+    <button class="pa-contacted"  onclick="event.stopPropagation();markStatus(${e.evaluation_id},'contacted')">✓ 已联系</button>
+    <button class="pa-edit"       onclick="event.stopPropagation();openPoolModal(${e.evaluation_id})">编辑</button>
+    <button class="pa-close"      onclick="event.stopPropagation();markStatus(${e.evaluation_id},'closed')">关闭</button>
+    <button class="pa-remove"     onclick="event.stopPropagation();removeEntry(${e.evaluation_id})">移除</button>
   ` : `
-    <button class="pa-reactivate" onclick="openPoolModal(${e.evaluation_id},${JSON.stringify(e.name)},${JSON.stringify(e)})">重新激活</button>
-    <button class="pa-remove" onclick="removeEntry(${e.evaluation_id})">移除</button>
+    <button class="pa-reactivate" onclick="event.stopPropagation();openPoolModal(${e.evaluation_id})">重新激活</button>
+    <button class="pa-remove"     onclick="event.stopPropagation();removeEntry(${e.evaluation_id})">移除</button>
   `;
 
-  return `<div class="pool-card ${cls}">
-    <span class="pool-name">${e.name||'未知'}</span>
-    <span class="pool-job">${e.job_name}</span>
-    <span style="font-size:11px;padding:1px 7px;border-radius:6px;font-weight:700;${vStyle}">${e.verdict}</span>
-    ${e.reason_tag ? `<span class="pool-reason">${e.reason_tag}</span>` : ''}
-    <span class="pool-date ${dateClass}">${e.recontact_date}${e.recontact_date < TODAY ? ' ⚠逾期' : e.recontact_date === TODAY ? ' 🔔今天' : ''}</span>
-    ${e.note ? `<span class="pool-note">${e.note}</span>` : '<span class="pool-note"></span>'}
-    <div class="pool-acts">${actHtml}</div>
+  // 展开区内容
+  const isManual = (e.verdict === '自投' || e.verdict === '主动搜索');
+  const matches    = Array.isArray(e.matches_json)    ? e.matches_json    : [];
+  const mismatches = Array.isArray(e.mismatches_json) ? e.mismatches_json : [];
+  const mHtml  = matches.map(m =>
+    `<li><b>${escH(m['条件']||'')}</b>${m['条件']&&m['证据']?'：':''}${escH(m['证据']||'')}</li>`
+  ).join('');
+  const nmHtml = mismatches.map(m =>
+    `<li><b>${escH(m['条件']||'')}</b>${m['条件']&&m['原因']?'：':''}${escH(m['原因']||'')}</li>`
+  ).join('');
+
+  let bodyContent;
+  if (isManual) {
+    bodyContent = '<div class="pool-manual-hint">人工导入简历，无 AI 评分</div>';
+  } else if (!mHtml && !nmHtml && !e.verdict_reason) {
+    bodyContent = '<div class="pool-manual-hint">暂无 AI 评分详情</div>';
+  } else {
+    bodyContent = `
+      ${mHtml  ? `<ul class="ev-list">${mHtml}</ul>`      : ''}
+      ${nmHtml ? `<ul class="ev-list neg">${nmHtml}</ul>` : ''}
+      ${e.verdict_reason ? `<div class="pool-reason-text">${escH(e.verdict_reason)}</div>` : ''}
+    `;
+  }
+
+  const triageUrl  = `/triage/${encodeURIComponent(e.job_name)}?start_id=${e.evaluation_id}`;
+  const approvedUrl = `/approved/${encodeURIComponent(e.job_name)}?highlight=${e.evaluation_id}`;
+
+  return `<div class="pool-card ${cls}" id="pc-${e.evaluation_id}">
+    <div class="pool-head" onclick="togglePoolCard(${e.evaluation_id})">
+      <span class="pool-toggle">▶</span>
+      <span class="pool-name">${escH(e.name||'未知')}</span>
+      ${e.age         ? `<span class="pool-meta">${escH(String(e.age))}岁</span>`         : ''}
+      ${e.first_degree? `<span class="pool-meta">${escH(e.first_degree)}</span>`           : ''}
+      ${e.school      ? `<span class="pool-meta">${escH(e.school)}</span>`                 : ''}
+      <span class="pool-job">${escH(e.job_name)}</span>
+      <span style="font-size:11px;padding:1px 7px;border-radius:6px;font-weight:700;flex-shrink:0;${vStyle}">${escH(e.verdict)}</span>
+      ${e.reason_tag  ? `<span class="pool-tag-reason">${escH(e.reason_tag)}</span>`       : ''}
+      <span class="pool-date ${dateClass}">${e.recontact_date}${e.recontact_date < TODAY ? ' ⚠逾期' : e.recontact_date === TODAY ? ' 🔔今天' : ''}</span>
+      ${e.note        ? `<span class="pool-note" title="${escH(e.note)}">${escH(e.note)}</span>` : ''}
+      <div class="pool-acts">${actHtml}</div>
+    </div>
+    <div class="pool-body">
+      ${bodyContent}
+      <div class="pool-nav-acts">
+        <button class="pa-triage"   onclick="window.open('${triageUrl}','_blank')">→ 处理台</button>
+        <a      class="pa-approved" href="${approvedUrl}">→ 通过页面</a>
+      </div>
+    </div>
   </div>`;
+}
+
+function togglePoolCard(evalId) {
+  const card = document.getElementById('pc-' + evalId);
+  if (card) card.classList.toggle('open');
 }
 
 async function markStatus(evalId, status) {
@@ -196,15 +268,16 @@ async function removeEntry(evalId) {
   loadPool();
 }
 
-function openPoolModal(evalId, name, existing) {
+function openPoolModal(evalId) {
   _pmEvalId = evalId;
-  document.getElementById('pm-name').textContent = name || '未知';
-  document.getElementById('pm-title').textContent = existing && existing.recontact_date ? '编辑人才池记录' : '放入人才池';
-  document.getElementById('pm-date').value = existing?.recontact_date || '';
-  document.getElementById('pm-reason').value = existing?.reason_tag || '';
-  document.getElementById('pm-note').value = existing?.note || '';
-  const modal = document.getElementById('pool-modal');
-  modal.style.display = 'flex';
+  const existing = _poolMap[evalId] || null;
+  document.getElementById('pm-name').textContent  = (existing && existing.name) || '未知';
+  document.getElementById('pm-title').textContent = (existing && existing.recontact_date)
+                                                     ? '编辑人才池记录' : '放入人才池';
+  document.getElementById('pm-date').value   = existing?.recontact_date || '';
+  document.getElementById('pm-reason').value = existing?.reason_tag    || '';
+  document.getElementById('pm-note').value   = existing?.note          || '';
+  document.getElementById('pool-modal').style.display = 'flex';
 }
 
 function closePoolModal() {
@@ -221,7 +294,7 @@ async function submitPoolModal() {
       evaluation_id: _pmEvalId,
       recontact_date: date,
       reason_tag: document.getElementById('pm-reason').value,
-      note: document.getElementById('pm-note').value,
+      note:       document.getElementById('pm-note').value,
     })
   });
   closePoolModal();

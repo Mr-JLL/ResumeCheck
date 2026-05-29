@@ -71,12 +71,6 @@
       <button class="btn cp-btn-danger" id="btn-reset" style="margin-top:2px;font-size:10px;opacity:.65">⚠ 完全重置</button>
     </div>
 
-    <!-- 快速入口 -->
-    <div class="cp-section" style="margin-top:10px">快速入口</div>
-    <div class="cp-btn-col">
-      <a class="btn btn-success" href="{{ url_for('triage_page', job_name=job_name) }}">⚡ 进入处理台</a>
-    </div>
-
     <!-- 实时日志 -->
     <div class="cp-section" style="margin-top:10px">实时日志</div>
     <pre id="cp-log" class="cp-log">[等待中...]</pre>
@@ -393,6 +387,14 @@
 <script>
 const JOB = {{ job_name | tojson }};
 const SRV_DEVICE_ID = 'server-local';
+
+function openTriage(evalId) {
+  let url = '/triage/' + encodeURIComponent(JOB)
+          + '?start_id=' + evalId
+          + '&verdict_filter=' + encodeURIComponent(curFilter);
+  if (curFilter === '排除') url += '&include_excluded=1';
+  window.open(url, '_blank');
+}
 let allCands = [];
 let curFilter = 'all';
 let refreshQueued = false;
@@ -635,7 +637,7 @@ function renderCard(c) {
           <button class="act-ok" ${isActed?'disabled':''} onclick="doAct(${c.evaluation_id},'approved',this)">通过</button>
           <button class="act-no" ${isActed?'disabled':''} onclick="doAct(${c.evaluation_id},'disapproved',this)">不通过</button>
         ` : ''}
-        <button class="act-go" onclick="window.open('/triage/${encodeURIComponent(JOB)}?start_id=${c.evaluation_id}','_blank')">处理台</button>
+        <button class="act-go" onclick="openTriage(${c.evaluation_id})">处理台</button>
         ${!isExcluded ? `<button class="act-pool" onclick="openPoolModal(${c.evaluation_id},${escHtml(JSON.stringify(c.name||'未知'))})">⏰ 人才池</button>` : ''}
       </div>
     </div>

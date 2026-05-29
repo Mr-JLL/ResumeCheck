@@ -4,6 +4,17 @@
 {% block content %}
 <div class="apr-wrap">
 
+  {% if highlight_id %}
+  <div id="highlight-notice" style="background:#fff8e1;border:1px solid #ffc107;border-radius:7px;
+       padding:9px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px">
+    <span>📌 日期筛选已清除，以定位人才池候选人</span>
+    <a href="{{ url_for('approved_page', job_name=job_name) }}"
+       style="margin-left:auto;font-size:12px;color:#3498db;text-decoration:none;white-space:nowrap">
+      恢复默认筛选 →
+    </a>
+  </div>
+  {% endif %}
+
   <!-- ══ 顶部 ══ -->
   <div class="apr-header">
     <div class="apr-title-row">
@@ -12,8 +23,6 @@
         {{ job_name }} · 通过简历
         <span class="apr-badge" id="total-badge">共{{ total }}人</span>
       </h1>
-      <a class="btn" href="{{ url_for('cockpit_page', job_name=job_name) }}">驾驶舱</a>
-      <a class="btn" href="{{ url_for('triage_page', job_name=job_name) }}?approved_only=1&include_excluded=1">⚡ 处理台</a>
       <button class="btn" style="background:#3d5afe;color:#fff;border-color:#3d5afe" onclick="openImportPanel()">导入简历</button>
     </div>
     <!-- 需求8(4): 日期筛选 -->
@@ -307,6 +316,14 @@
 /* ── 多选 ── */
 .ac-chk{width:14px;height:14px;cursor:pointer;flex-shrink:0;accent-color:#27ae60;margin:0}
 .ac-selected{box-shadow:0 0 0 2px rgba(39,174,96,.45)!important;border-color:#27ae60!important}
+
+/* ── 人才池定位高亮 ── */
+.apr-highlighted{scroll-margin-top:80px}
+@keyframes apr-pulse{
+  0%,100%{box-shadow:0 0 0 3px rgba(52,152,219,.7)}
+  50%     {box-shadow:0 0 0 6px rgba(52,152,219,.15)}
+}
+.apr-highlighted{animation:apr-pulse 1s ease-in-out 3;border-color:#3498db!important}
 
 /* ── 浮动工具栏 ── */
 .apr-sel-toolbar{
@@ -697,6 +714,20 @@ let aprSelected = new Map();
 
 // 初始化
 renderAll();
+
+// ── 人才池定位高亮 ────────────────────────────────────────
+const HIGHLIGHT_ID = {{ highlight_id|tojson }};
+if (HIGHLIGHT_ID) {
+  requestAnimationFrame(() => {
+    const card = document.getElementById('ac-' + HIGHLIGHT_ID);
+    const body = document.getElementById('acb-' + HIGHLIGHT_ID);
+    if (card && body) {
+      body.classList.add('open');
+      card.classList.add('apr-highlighted');
+      card.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }
+  });
+}
 
 function aprToggleSel(evalId, ev) {
   ev.stopPropagation();

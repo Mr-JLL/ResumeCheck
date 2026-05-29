@@ -874,8 +874,18 @@ def approved_page(job_name):
     job = database.get_job(job_name)
     if not job:
         return f"岗位「{job_name}」不存在", 404
-    date_from = request.args.get("date_from", "")
-    date_to   = request.args.get("date_to", "")
+    highlight_raw = request.args.get("highlight", "")
+    try:
+        highlight_id = int(highlight_raw) if highlight_raw else None
+    except (ValueError, TypeError):
+        highlight_id = None
+    # 带 highlight 时清空日期过滤，确保目标候选人一定在列表中
+    if highlight_id:
+        date_from = ""
+        date_to   = ""
+    else:
+        date_from = request.args.get("date_from", "")
+        date_to   = request.args.get("date_to", "")
     candidates = database.list_approved_for_job(
         job_name,
         date_from=date_from or None,
@@ -921,6 +931,7 @@ def approved_page(job_name):
         date_to=date_to,
         total=len(candidates),
         hard_cond_names=hard_cond_names,
+        highlight_id=highlight_id,
     )
 
 
@@ -1408,11 +1419,19 @@ def api_triage_list():
     elif isinstance(ind_raw, str) and ind_raw.strip():
         industries_required = [s.strip() for s in ind_raw.split("、") if s.strip()]
 
-    include_excluded = request.args.get("include_excluded", "0") == "1"
+    verdict_filter = request.args.get("verdict_filter", "")
+    # 服务端推导 include_hidden：排除 Tab 强制为 True，无需依赖前端额外传参
+    include_excluded_param = request.args.get("include_excluded", "0") == "1"
+    include_hidden = include_excluded_param or (verdict_filter == "排除")
     exclude_processed = request.args.get("exclude_processed", "0") == "1"
     all_evals = database.list_evaluations_for_job(job_name,
-                                                   include_hidden=include_excluded,
+                                                   include_hidden=include_hidden,
                                                    exclude_processed=exclude_processed)
+    # 按 verdict_filter 过滤（匹配驾驶舱各 Tab 的显示逻辑）
+    if verdict_filter == "全部":
+        all_evals = [e for e in all_evals if e["verdict"] not in ("排除", "自投", "主动搜索")]
+    elif verdict_filter in ("排除", "深绿", "蓝色", "黄色"):
+        all_evals = [e for e in all_evals if e["verdict"] == verdict_filter]
 
     # 注入 structured_json 用于 ranker（一次批量查询，避免 N 次开关连接）
     if all_evals:

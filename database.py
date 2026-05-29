@@ -1032,6 +1032,7 @@ def list_talent_pool(job_name=None, status='active'):
             SELECT tp.id AS pool_id, tp.evaluation_id, tp.recontact_date,
                    tp.reason_tag, tp.note, tp.status, tp.created_at,
                    e.verdict, e.verdict_reason,
+                   e.matches_json, e.mismatches_json,
                    c.name, c.age, c.first_degree, c.school, c.total_years,
                    c.resume_id,
                    j.name AS job_name
@@ -1050,7 +1051,19 @@ def list_talent_pool(job_name=None, status='active'):
             params.append(job_name)
         sql += " ORDER BY tp.recontact_date ASC, tp.id ASC"
         rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d['matches_json'] = json.loads(d.get('matches_json') or '[]')
+            except Exception:
+                d['matches_json'] = []
+            try:
+                d['mismatches_json'] = json.loads(d.get('mismatches_json') or '[]')
+            except Exception:
+                d['mismatches_json'] = []
+            result.append(d)
+        return result
 
 
 def list_due_talent_pool(days_ahead=0):
@@ -1062,8 +1075,9 @@ def list_due_talent_pool(days_ahead=0):
         rows = conn.execute("""
             SELECT tp.id AS pool_id, tp.evaluation_id, tp.recontact_date,
                    tp.reason_tag, tp.note, tp.status,
-                   e.verdict,
-                   c.name, c.age, c.first_degree, c.school,
+                   e.verdict, e.verdict_reason,
+                   e.matches_json, e.mismatches_json,
+                   c.name, c.age, c.first_degree, c.school, c.total_years,
                    j.name AS job_name
             FROM talent_pool tp
             JOIN evaluations e ON tp.evaluation_id = e.id
@@ -1072,7 +1086,19 @@ def list_due_talent_pool(days_ahead=0):
             WHERE tp.status = 'active' AND tp.recontact_date <= ?
             ORDER BY tp.recontact_date ASC
         """, (cutoff,)).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d['matches_json'] = json.loads(d.get('matches_json') or '[]')
+            except Exception:
+                d['matches_json'] = []
+            try:
+                d['mismatches_json'] = json.loads(d.get('mismatches_json') or '[]')
+            except Exception:
+                d['mismatches_json'] = []
+            result.append(d)
+        return result
 
 
 # =============================================================================

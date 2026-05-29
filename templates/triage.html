@@ -22,33 +22,6 @@
     </div>
   </div>
 
-  <div class="triage-toolbar">
-    <details class="weight-panel">
-      <summary>权重排序（同 verdict 内重排）</summary>
-      <div class="weight-grid">
-        <label>工龄 <span id="w-years-val">{{ default_weights.years }}</span>
-          <input type="range" min="0" max="100" id="w-years" value="{{ default_weights.years }}">
-        </label>
-        <label>学历 <span id="w-education-val">{{ default_weights.education }}</span>
-          <input type="range" min="0" max="100" id="w-education" value="{{ default_weights.education }}">
-        </label>
-        <label>英语 <span id="w-english-val">{{ default_weights.english }}</span>
-          <input type="range" min="0" max="100" id="w-english" value="{{ default_weights.english }}">
-        </label>
-        <label>行业 <span id="w-industry-val">{{ default_weights.industry }}</span>
-          <input type="range" min="0" max="100" id="w-industry" value="{{ default_weights.industry }}">
-        </label>
-        <label>稳定性 <span id="w-stability-val">{{ default_weights.stability }}</span>
-          <input type="range" min="0" max="100" id="w-stability" value="{{ default_weights.stability }}">
-        </label>
-        <button class="btn btn-primary btn-apply-weights" id="btn-apply-weights">应用排序</button>
-        <label id="approved-only-label" style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none;margin-top:6px;">
-          <input type="checkbox" id="chk-approved-only"> 仅显示已通过（与通过页同序）
-        </label>
-      </div>
-    </details>
-
-  </div>
 </div>
 
 <div id="approved-only-banner" style="display:none;background:#e8f8ef;border:1px solid #27ae60;border-radius:8px;padding:8px 14px;margin:0 0 8px;font-size:13px;color:#1e8449;align-items:center;gap:10px;">
@@ -277,33 +250,13 @@ let _hardCondNames = new Set();
 let _stageOrder = [];
 
 const _urlParams = new URLSearchParams(window.location.search);
-const _approvedOnly = _urlParams.get("approved_only") === "1";
+const _approvedOnly   = _urlParams.get("approved_only")   === "1";
 const _includeExcluded = _urlParams.get("include_excluded") === "1";
+const _verdictFilter  = _urlParams.get("verdict_filter")  || "";
 
 function $(id){ return document.getElementById(id); }
 
-function getWeights(){
-  return {
-    years: parseInt($("w-years").value),
-    education: parseInt($("w-education").value),
-    english: parseInt($("w-english").value),
-    industry: parseInt($("w-industry").value),
-    stability: parseInt($("w-stability").value),
-  };
-}
-
-document.querySelectorAll("input[type=range]").forEach(r=>{
-  r.addEventListener("input", ()=>{
-    $(r.id+"-val").textContent = r.value;
-  });
-});
-
-$("btn-apply-weights").addEventListener("click", ()=>{
-  loadList();
-});
-$("chk-approved-only").addEventListener("change", () => { loadList(); });
-
-// ── 按通过页顺序排序 ─────────────────────────────────────
+// ── 按通过页顺序排序（仅 _approvedOnly 模式使用）────────────
 const _DECISIVE     = new Set(['approved','hired','disapproved','rejected']);
 const _APPROVED_SET = new Set(['approved','hired']);
 const _REJECTED_SET = new Set(['disapproved','rejected']);
@@ -387,12 +340,12 @@ function renderAiRefPanel(){
 }
 
 async function loadList(){
-  const w = getWeights();
-  // 从通过页面进入时，强制加载排除分类以保证所有已通过候选人都能被找到
-  const needIncludeExcluded = _approvedOnly || _includeExcluded;
-  let url = `/api/triage/list?job_name=${encodeURIComponent(JOB_NAME)}`
-          + `&weights=${encodeURIComponent(JSON.stringify(w))}`;
-  if (needIncludeExcluded) url += "&include_excluded=1";
+  // 构造 API URL：不再传 weights（使用后端默认权重，与驾驶舱一致）
+  let url = `/api/triage/list?job_name=${encodeURIComponent(JOB_NAME)}`;
+  if (_verdictFilter) url += `&verdict_filter=${encodeURIComponent(_verdictFilter)}`;
+  // include_excluded：排除 Tab 由服务端通过 verdict_filter 自动处理；
+  // _approvedOnly / _includeExcluded（通过页面路径）则仍需显式传递
+  if (_approvedOnly || _includeExcluded) url += "&include_excluded=1";
   $("left-loading").style.display = "block";
   $("left-content").style.display = "none";
   $("left-loading").textContent = "加载候选人列表…";
@@ -406,18 +359,15 @@ async function loadList(){
   _stageOrder = d.stage_order || [];
   _criteriaDetails = d.criteria_notes || [];
   _hardCondNames = new Set((d.hard_condition_names || []).map(s => s.trim()));
-  // approved-only 模式：强制勾选并过滤，只保留最终状态为已通过的候选人
+  // approved-only 模式（通过页面入口）：过滤并按 HR 阶段排序
   if (_approvedOnly) {
-    $("chk-approved-only").checked = true;
     candidates = candidates.filter(c => _APPROVED_SET.has(c.latest_action));
-  } else if ($("chk-approved-only").checked) {
-    candidates = candidates.filter(c => _APPROVED_SET.has(c.latest_action));
+    candidates = sortByApprovedOrder(candidates);
   }
-  // 按通过页顺序排序
-  candidates = sortByApprovedOrder(candidates);
+  // 驾驶舱 Tab 入口：保持 API 返回的 rank_score 顺序，与驾驶舱显示一致
   renderAiRefPanel();
   if (candidates.length === 0){
-    $("left-loading").textContent = _approvedOnly ? "通过页面暂无简历。" : "本岗位暂无待处理候选人。";
+    $("left-loading").textContent = _approvedOnly ? "通过页面暂无简历。" : "当前筛选下暂无候选人。";
     updateCounter();
     return;
   }
@@ -428,16 +378,15 @@ async function loadList(){
     if (found >= 0) {
       idx = found;
     } else {
-      // 找不到目标候选人时明确提示，不再静默跳到第0个
       $("left-loading").style.display = "block";
       $("left-content").style.display = "none";
-      $("left-loading").textContent = "⚠ 该候选人不在当前列表中，可能已被重新评估或删除，请刷新通过页面后重试。";
+      $("left-loading").textContent = "⚠ 该候选人不在当前筛选列表中，可能已被重新评估，请刷新驾驶舱后重试。";
       $("resume-iframe").src = "about:blank";
       updateCounter();
       return;
     }
   } else {
-    // 默认：找第一个尚未处理的；approved-only 模式下全部已处理，直接从第0个开始
+    // 无 start_id：找第一个尚未处理的候选人，全部已处理则从第0个开始
     const first = candidates.findIndex(c =>
       !c.latest_action || (c.latest_action !== "approved" && c.latest_action !== "disapproved"
                            && c.latest_action !== "hired" && c.latest_action !== "rejected"));
@@ -448,19 +397,27 @@ async function loadList(){
 
 function updateCounter(){
   const total = candidates.length;
-  let grpPart = '';
-  if (total > 0 && _stageOrder.length > 0) {
-    const { name, pos, total: grpTotal } = _getCurrentGroupInfo();
-    grpPart = ` · ${name} ${pos}/${grpTotal}`;
-  }
+  const cur = total > 0 ? idx + 1 : 0;
   if (_approvedOnly) {
-    // 通过页面入口：显示「通过简历 共N份 · 当前第X份」，去掉与用户无关的「已处理」数字
-    $("triage-counter").textContent = `通过简历 共 ${total} 份 · 当前 ${total>0?idx+1:0}/${total}${grpPart}`;
+    // 通过页面入口：按 HR 阶段分组，显示组信息
+    let grpPart = '';
+    if (total > 0 && _stageOrder.length > 0) {
+      const { name, pos, total: grpTotal } = _getCurrentGroupInfo();
+      grpPart = ` · ${name} ${pos}/${grpTotal}`;
+    }
+    $("triage-counter").textContent = `通过简历 共 ${total} 份 · 当前 ${cur}/${total}${grpPart}`;
+  } else if (_verdictFilter) {
+    // 驾驶舱 Tab 入口：显示当前 Tab 名称及位置，无分组信息
+    const tabLabel = _verdictFilter === '全部' ? '全部' : _verdictFilter;
+    const handled = candidates.filter(c =>
+      c.latest_action === "approved" || c.latest_action === "disapproved"
+      || c.latest_action === "hired" || c.latest_action === "rejected").length;
+    $("triage-counter").textContent = `${tabLabel} · 共 ${total} 份 · 已处理 ${handled} · 当前 ${cur}/${total}`;
   } else {
     const handled = candidates.filter(c =>
       c.latest_action === "approved" || c.latest_action === "disapproved"
       || c.latest_action === "hired" || c.latest_action === "rejected").length;
-    $("triage-counter").textContent = `共 ${total} 份 · 已处理 ${handled} · 当前 ${total>0?idx+1:0}/${total}${grpPart}`;
+    $("triage-counter").textContent = `共 ${total} 份 · 已处理 ${handled} · 当前 ${cur}/${total}`;
   }
 }
 
@@ -1023,10 +980,7 @@ function switchToAllMode() {
 
 // ── 根据入口模式初始化 UI ─────────────────────────────────
 if (_approvedOnly) {
-  // 隐藏「仅显示已通过」复选框（已被自动激活，避免用户误操作）
-  const label = document.getElementById("approved-only-label");
-  if (label) label.style.display = "none";
-  // 显示模式横幅
+  // 显示通过页面入口横幅
   const banner = document.getElementById("approved-only-banner");
   if (banner) banner.style.display = "flex";
 }
