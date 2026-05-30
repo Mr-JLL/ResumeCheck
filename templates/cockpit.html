@@ -11,6 +11,11 @@
       <a href="{{ url_for('dashboard') }}" class="cp-back">← 首页</a>
       <h2 class="cp-title">{{ job_name }}</h2>
       <a href="{{ url_for('prompt_page', job_name=job_name) }}" class="cp-link">编辑 Prompt</a>
+      <a href="/tracker" style="display:inline-flex;align-items:center;gap:5px;
+         padding:6px 14px;background:#3d5afe;color:#fff;border-radius:6px;
+         text-decoration:none;font-size:13px;font-weight:600">
+        📋 面试跟进台
+      </a>
     </div>
 
     <!-- 状态数字（历史汇总） -->

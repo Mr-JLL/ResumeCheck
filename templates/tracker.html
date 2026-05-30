@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+{% block title %}面试跟进台{% endblock %}
+{% block content %}
+<div style="max-width:1200px;margin:0 auto;padding:20px 16px">
+
+  <!-- 顶部栏 -->
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+    <a href="{{ url_for('dashboard') }}" style="color:#3d5afe;text-decoration:none;font-size:13px">← 首页</a>
+    <h1 style="font-size:20px;font-weight:700;color:#1a1a2e;flex:1;margin:0">面试跟进台</h1>
+    <div id="week-status" style="font-size:12px;color:#888">
+      {% if week_start %}上次开始本周：{{ week_start[:10] }}{% else %}尚未开始本周{% endif %}
+    </div>
+    <button onclick="previewStartWeek()" id="btn-start-week"
+      style="padding:7px 14px;border:none;border-radius:6px;font-size:13px;
+             background:#f39c12;color:#fff;cursor:pointer;font-weight:600">开始本周</button>
+    <button onclick="window.location='/export/tracker'"
+      style="padding:7px 14px;border:none;border-radius:6px;font-size:13px;
+             background:#27ae60;color:#fff;cursor:pointer;font-weight:600">↓ 导出Excel</button>
+    <button onclick="openAddModal()"
+      style="padding:7px 14px;border:none;border-radius:6px;font-size:13px;
+             background:#3d5afe;color:#fff;cursor:pointer;font-weight:600">+ 手动添加</button>
+  </div>
+
+  <!-- 统一候选人表格 -->
+  <div style="background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);overflow:hidden">
+    {% if all_candidates %}
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead>
+        <tr style="background:#f8f9fa">
+          <th style="padding:9px 12px;text-align:left;color:#666;font-weight:600;white-space:nowrap">面试结果</th>
+          <th style="padding:9px 12px;text-align:left;color:#666;font-weight:600">姓名</th>
+          <th style="padding:9px 12px;text-align:left;color:#666;font-weight:600">应聘岗位</th>
+          <th style="padding:9px 4px;text-align:center;color:#666;font-weight:600">年龄</th>
+          <th style="padding:9px 12px;text-align:left;color:#666;font-weight:600;white-space:nowrap">面试/入职时间</th>
+          <th style="padding:9px 12px;text-align:left;color:#666;font-weight:600">需求部门</th>
+          <th style="padding:9px 12px;text-align:left;color:#666;font-weight:600">学历</th>
+          <th style="padding:9px 12px;text-align:left;color:#666;font-weight:600">毕业院校/专业</th>
+          <th style="padding:9px 4px;text-align:center;color:#666;font-weight:600">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in all_candidates %}
+        {% set other_jobs = name_jobs.get(c.name, []) | reject("equalto", c.get('job_name','')) | list %}
+        {% set eval_id = c.get('evaluation_id', '') %}
+        {% set entry_id = c.get('id', '') %}
+        {% set is_sys = c.get('entry_source','system') == 'system' %}
+        {% set is_reject = c.stage in tracker_reject %}
+        <tr class="tk-row" id="tkr-{{ eval_id if is_sys else entry_id }}"
+            data-src="{{ c.get('source_label','') }}"
+            data-stage-time="{{ c.get('stage_time','') }}"
+            style="{% if c.stage == '已入职' %}background:#f1f8e9;{% elif is_reject %}background:#fafafa;{% endif %}border-bottom:1px solid #f5f5f5">
+          <td style="padding:9px 12px;white-space:nowrap">
+            <span class="stage-badge" data-stage="{{ c.stage }}">{{ c.stage }}</span>
+          </td>
+          <td style="padding:9px 12px;font-weight:600;{% if is_reject %}color:#999;{% endif %}">
+            {{ c.name }}
+            {% if other_jobs %}
+            <span title="{{ other_jobs|join('、') }}" style="font-size:10px;background:#e8eaf6;
+              color:#3d5afe;border-radius:4px;padding:1px 5px;cursor:help;margin-left:3px">×{{ name_jobs.get(c.name,[])|length }}岗</span>
+            {% endif %}
+          </td>
+          <td style="padding:9px 12px;color:{% if is_reject %}#aaa{% else %}#555{% endif %}">{{ c.get('job_name','') }}</td>
+          <td style="padding:9px 4px;text-align:center;color:{% if is_reject %}#bbb{% else %}#888{% endif %}">{{ c.get('age','') }}</td>
+          <td style="padding:9px 12px;color:#555;white-space:nowrap">{{ c.get('stage_time','') }}</td>
+          <td style="padding:9px 12px">
+            <span class="dept-display" id="dept-disp-{{ eval_id if is_sys else entry_id }}"
+              onclick="startDeptEdit(this,'{{ eval_id if is_sys else entry_id }}','{{ 'sys' if is_sys else 'manual' }}','{{ c.get('department','') | replace("'", "\\'") }}')"
+              style="cursor:pointer;padding:2px 6px;border-radius:4px;border:1px solid transparent;
+                     min-width:60px;display:inline-block"
+              title="点击编辑部门">
+              {{ c.get('department','') or '—' }}
+            </span>
+          </td>
+          <td style="padding:9px 12px;color:#888">{{ c.get('first_degree') or c.get('education','') }}</td>
+          <td style="padding:9px 12px;color:#888;max-width:200px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">
+            {{ (c.get('school','') or '') + ' ' + (c.get('major','') or '') if c.get('school') else c.get('school_major','') }}
+          </td>
+          <td style="padding:9px 4px;text-align:center;white-space:nowrap">
+            {% if not is_sys %}
+            <button onclick="editManual({{ entry_id }})"
+              style="font-size:11px;padding:3px 8px;border:1px solid #3d5afe;color:#3d5afe;
+                     background:none;border-radius:4px;cursor:pointer;margin-right:3px">编辑</button>
+            <button onclick="deleteManual({{ entry_id }})"
+              style="font-size:11px;padding:3px 8px;border:1px solid #e74c3c;color:#e74c3c;
+                     background:none;border-radius:4px;cursor:pointer">删除</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    <div style="padding:40px;text-align:center;color:#bbb">暂无候选人记录</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- 开始本周确认框 -->
+<div id="sw-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:1000;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:10px;padding:24px;width:480px;max-width:95vw;
+              box-shadow:0 20px 60px rgba(0,0,0,.2)">
+    <div style="font-size:15px;font-weight:700;color:#f39c12;margin-bottom:12px">确认开始本周？</div>
+    <p style="font-size:13px;color:#555;margin-bottom:12px">以下候选人将从跟进台移除（数据库中的通过页面记录不受影响）：</p>
+    <div id="sw-list" style="max-height:200px;overflow-y:auto;font-size:12px;
+         border:1px solid #eee;border-radius:6px;padding:10px;margin-bottom:16px"></div>
+    <div id="sw-empty" style="display:none;color:#888;font-size:12px;margin-bottom:16px">
+      没有需要清除的记录，当前所有候选人均为本周活跃。</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="cancelStartWeek()" style="padding:7px 16px;border:1px solid #ccc;
+              border-radius:5px;background:#f5f6fa;cursor:pointer;font-size:13px">取消</button>
+      <button onclick="confirmStartWeek()" style="padding:7px 18px;border:none;
+              border-radius:5px;background:#f39c12;color:#fff;cursor:pointer;font-size:13px;font-weight:600">确认开始</button>
+    </div>
+  </div>
+</div>
+
+<!-- 手动添加/编辑弹窗 -->
+<div id="add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:1000;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:10px;padding:24px;width:500px;max-width:95vw;
+              max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.2)">
+    <div style="font-size:15px;font-weight:700;color:#3d5afe;margin-bottom:16px" id="add-modal-title">手动添加候选人</div>
+    <input type="hidden" id="edit-entry-id" value="">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">姓名 *</label>
+        <input id="f-name" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">应聘岗位</label>
+        <input id="f-job" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">年龄</label>
+        <input id="f-age" type="number" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">面试结果（阶段）</label>
+        <select id="f-stage" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px" onchange="onAddStageChange()">
+          <option value="">— 选择阶段 —</option>
+          {% for s in ['已一面','已二面','待谈薪','签批中','待入职','已入职','不合适','个人放弃'] %}
+          <option value="{{ s }}">{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div id="f-time-wrap" style="display:none">
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px" id="f-time-label">面试时间</label>
+        <input id="f-time" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">需求部门</label>
+        <input id="f-dept" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">学历</label>
+        <input id="f-edu" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">简历来源</label>
+        <input id="f-src" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px" placeholder="如：猎聘、自投…">
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">毕业院校/专业</label>
+      <input id="f-school" style="width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">
+      <button onclick="closeAddModal()" style="padding:7px 16px;border:1px solid #ccc;border-radius:5px;background:#f5f6fa;cursor:pointer;font-size:13px">取消</button>
+      <button onclick="submitAdd()" style="padding:7px 18px;border:none;border-radius:5px;background:#3d5afe;color:#fff;cursor:pointer;font-size:13px;font-weight:600">保存</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.stage-badge { display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600 }
+.stage-badge[data-stage="已一面"]   { background:#dbeafe;color:#1e40af }
+.stage-badge[data-stage="已二面"]   { background:#c7d2fe;color:#1e1b4b }
+.stage-badge[data-stage="待谈薪"]   { background:#fef3c7;color:#92400e }
+.stage-badge[data-stage="签批中"]   { background:#ffedd5;color:#7c2d12 }
+.stage-badge[data-stage="待入职"]   { background:#ede9fe;color:#4c1d95 }
+.stage-badge[data-stage="已入职"]   { background:#dcfce7;color:#14532d }
+.stage-badge[data-stage="不合适"]   { background:#f3f4f6;color:#6b7280 }
+.stage-badge[data-stage="个人放弃"] { background:#f3f4f6;color:#9ca3af }
+.dept-display:hover { background:#f0f2ff;border-color:#c5cae9 }
+</style>
+
+<script>
+const WEEK_START = {{ week_start|tojson }};
+
+// ── 开始本周 ────────────────────────────────────────────
+async function previewStartWeek() {
+  const now = new Date();
+  const dayOfWeek = now.getDay() === 0 ? 6 : now.getDay() - 1;
+  const thisMonday = new Date(now);
+  thisMonday.setDate(now.getDate() - dayOfWeek);
+  thisMonday.setHours(0,0,0,0);
+  const _pad = n => String(n).padStart(2,'0');
+  const mondayISO = `${thisMonday.getFullYear()}-${_pad(thisMonday.getMonth()+1)}-${_pad(thisMonday.getDate())}T00:00:00`;
+
+  if (WEEK_START && WEEK_START >= mondayISO) {
+    alert('本周已于 ' + WEEK_START.slice(0,10) + ' 开始，无需重复操作');
+    return;
+  }
+
+  const res = await fetch('/api/tracker/start_week/preview');
+  const d = await res.json();
+  if (!d.ok) return;
+
+  const list = document.getElementById('sw-list');
+  const empty = document.getElementById('sw-empty');
+  if (d.to_clear.length === 0) {
+    list.style.display = 'none';
+    empty.style.display = 'block';
+  } else {
+    list.style.display = 'block';
+    empty.style.display = 'none';
+    list.innerHTML = d.to_clear.map(c =>
+      `<div style="padding:4px 0;border-bottom:1px solid #f5f5f5;color:#555">
+        ${c.name} · ${c.job} · <span style="color:#e74c3c">${c.stage}</span> · ${c.time.slice(0,10)}
+       </div>`).join('');
+  }
+  document.getElementById('sw-modal').style.display = 'flex';
+}
+
+function cancelStartWeek() {
+  document.getElementById('sw-modal').style.display = 'none';
+}
+
+async function confirmStartWeek() {
+  document.getElementById('sw-modal').style.display = 'none';
+  const res = await fetch('/api/tracker/start_week', { method:'POST' });
+  const d = await res.json();
+  if (d.ok) location.reload();
+}
+
+// ── 部门内联编辑 ─────────────────────────────────────────
+function startDeptEdit(el, rowId, type, currentDept) {
+  const orig = currentDept;
+  const input = document.createElement('input');
+  input.value = orig === '—' ? '' : orig;
+  input.style.cssText = 'border:1px solid #3d5afe;border-radius:4px;padding:2px 6px;font-size:13px;width:100px;outline:none';
+  input.onclick = e => e.stopPropagation();
+  input.onblur = async () => {
+    const newVal = input.value.trim();
+    input.replaceWith(el);
+    el.textContent = newVal || '—';
+    if (newVal === (orig === '—' ? '' : orig)) return;
+    if (type === 'sys') {
+      const res = await fetch('/api/tracker/dept', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ evaluation_id: parseInt(rowId), department: newVal })
+      });
+      const d = await res.json();
+      if (d.conflict) {
+        const toast = document.createElement('div');
+        toast.textContent = `⚠ 与已约面时填写的部门不同，已保存为新部门「${newVal}」`;
+        toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#f39c12;color:#fff;' +
+          'padding:10px 16px;border-radius:6px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 4000);
+      }
+    } else {
+      await fetch(`/api/tracker/manual/${rowId}`, {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ department: newVal })
+      });
+    }
+  };
+  input.onkeydown = e => {
+    if (e.key === 'Enter') input.blur();
+    if (e.key === 'Escape') { input._cancel=true; input.replaceWith(el); }
+  };
+  el.replaceWith(input);
+  input.focus(); input.select();
+}
+
+// ── 手动添加/编辑 ────────────────────────────────────────
+function openAddModal() {
+  document.getElementById('add-modal-title').textContent = '手动添加候选人';
+  document.getElementById('edit-entry-id').value = '';
+  ['f-name','f-job','f-age','f-dept','f-edu','f-src','f-school','f-time'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  document.getElementById('f-stage').value = '';
+  document.getElementById('f-time-wrap').style.display = 'none';
+  document.getElementById('add-modal').style.display = 'flex';
+}
+
+function closeAddModal() {
+  document.getElementById('add-modal').style.display = 'none';
+}
+
+function onAddStageChange() {
+  const stage = document.getElementById('f-stage').value;
+  const wrap = document.getElementById('f-time-wrap');
+  const lbl = document.getElementById('f-time-label');
+  const inp = document.getElementById('f-time');
+  if (['已一面','已二面'].includes(stage)) {
+    wrap.style.display = 'block';
+    lbl.textContent = '面试时间（精确到分钟）';
+    inp.type = 'datetime-local';
+  } else if (['待入职','已入职'].includes(stage)) {
+    wrap.style.display = 'block';
+    lbl.textContent = stage === '已入职' ? '实际入职日期 *' : '预计入职日期';
+    inp.type = 'date';
+  } else {
+    wrap.style.display = 'none';
+    inp.type = 'text';
+  }
+}
+
+async function submitAdd() {
+  const name = document.getElementById('f-name').value.trim();
+  if (!name) { alert('姓名不能为空'); return; }
+  const stage = document.getElementById('f-stage').value;
+  if (stage === '已入职') {
+    const t = document.getElementById('f-time').value;
+    if (!t) { alert('已入职必须填写实际入职日期'); return; }
+  }
+
+  const timeVal = document.getElementById('f-time').value;
+  let stageTime = '';
+  if (timeVal) {
+    const inp = document.getElementById('f-time');
+    stageTime = inp.type === 'datetime-local' ? timeVal.replace('T',' ') : timeVal;
+  }
+
+  const payload = {
+    name, job_name: document.getElementById('f-job').value,
+    age: parseInt(document.getElementById('f-age').value) || null,
+    stage, stage_time: stageTime,
+    department: document.getElementById('f-dept').value,
+    education: document.getElementById('f-edu').value,
+    source_label: document.getElementById('f-src').value,
+    school_major: document.getElementById('f-school').value,
+  };
+
+  const editId = document.getElementById('edit-entry-id').value;
+  if (editId) {
+    await fetch(`/api/tracker/manual/${editId}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+  } else {
+    await fetch('/api/tracker/manual', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+  }
+  closeAddModal();
+  location.reload();
+}
+
+async function editManual(entryId) {
+  const row = document.getElementById('tkr-' + entryId);
+  if (!row) return;
+  const cells = row.querySelectorAll('td');
+  document.getElementById('add-modal-title').textContent = '编辑候选人';
+  document.getElementById('edit-entry-id').value = entryId;
+
+  // 先设置阶段并触发 type 切换
+  document.getElementById('f-stage').value = cells[0]?.querySelector('.stage-badge')?.textContent?.trim() || '';
+  onAddStageChange();
+
+  // 从 data 属性读取原始时间（避免 DOM 格式问题）
+  const rawTime = row.dataset.stageTime || '';
+  const timeInp = document.getElementById('f-time');
+  if (rawTime && timeInp.closest('#f-time-wrap')?.style.display !== 'none') {
+    if (timeInp.type === 'datetime-local') {
+      timeInp.value = rawTime.replace(' ', 'T').slice(0, 16);
+    } else if (timeInp.type === 'date') {
+      timeInp.value = rawTime.slice(0, 10);
+    } else {
+      timeInp.value = rawTime;
+    }
+  }
+
+  // 姓名：取纯文本节点，排除 ×N岗 span
+  const nameCell = cells[1];
+  const nameTextNode = [...(nameCell?.childNodes || [])].find(n => n.nodeType === 3);
+  document.getElementById('f-name').value = nameTextNode?.textContent?.trim() || '';
+  document.getElementById('f-job').value = cells[2]?.textContent?.trim() || '';
+  document.getElementById('f-age').value = cells[3]?.textContent?.trim() || '';
+  document.getElementById('f-dept').value = cells[5]?.querySelector('.dept-display')?.textContent?.trim().replace('—','') || '';
+  document.getElementById('f-edu').value = cells[6]?.textContent?.trim() || '';
+  document.getElementById('f-school').value = cells[7]?.textContent?.trim() || '';
+  document.getElementById('f-src').value = row.dataset.src || '';
+  document.getElementById('add-modal').style.display = 'flex';
+}
+
+async function deleteManual(entryId) {
+  if (!confirm('确认删除此候选人？（不可恢复）')) return;
+  await fetch(`/api/tracker/manual/${entryId}`, { method:'DELETE' });
+  location.reload();
+}
+</script>
+{% endblock %}

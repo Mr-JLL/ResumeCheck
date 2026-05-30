@@ -22,6 +22,9 @@ import subprocess
 import concurrent.futures
 import re
 import zipfile
+from datetime import datetime, timedelta
+import openpyxl
+from openpyxl.styles import PatternFill, Font, Alignment
 
 from flask import (Flask, render_template, request, jsonify,
                    redirect, url_for, send_file, Response)
@@ -906,6 +909,11 @@ def approved_page(job_name):
             c["hr_stages"] = json.loads(ht.get("stages_json") or "[]")
         except Exception:
             c["hr_stages"] = []
+        try:
+            c["hr_stage_times"] = json.loads(ht.get("stage_times_json") or "{}")
+        except Exception:
+            c["hr_stage_times"] = {}
+        c["department"] = ht.get("department") or ""
         c["hr_reject_reason"] = ht.get("reject_reason") or ""
         c["hr_note"] = ht.get("note") or ""
         # 解析 matches/mismatches
@@ -1345,17 +1353,42 @@ def api_outcome_note():
 
 @app.route("/api/hr_stage", methods=["POST"])
 def api_hr_stage():
-    """保存候选人 HR 阶段标签（需求8）"""
+    """保存候选人 HR 阶段标签（单选 + 时间存储 + 部门）"""
     data = request.get_json() or {}
-    eval_id = data.get("evaluation_id")
-    job_id  = data.get("job_id")
-    stages  = data.get("stages") or []
+    eval_id       = data.get("evaluation_id")
+    job_id        = data.get("job_id")
+    stage         = data.get("stage", "")          # 单个阶段字符串
+    stage_time    = data.get("stage_time", "")     # 该阶段对应时间
+    department    = data.get("department")          # None 表示不更新
     reject_reason = data.get("reject_reason", "")
-    note    = data.get("note", "")
+    note          = data.get("note", "")
+
     if not eval_id or not job_id:
         return jsonify(ok=False, message="缺少 evaluation_id 或 job_id"), 400
     try:
-        database.upsert_hr_stage(int(eval_id), int(job_id), stages, reject_reason, note)
+        # 读取现有 stage_times_json
+        existing = database.get_hr_stage(int(eval_id))
+        if existing:
+            try:
+                times = json.loads(existing.get('stage_times_json') or '{}')
+            except Exception:
+                times = {}
+        else:
+            times = {}
+
+        # 写入当前阶段时间
+        if stage and stage_time:
+            times[stage] = stage_time
+
+        stages_list = [stage] if stage else []
+        database.upsert_hr_stage(
+            int(eval_id), int(job_id),
+            stages=stages_list,
+            reject_reason=reject_reason,
+            note=note,
+            stage_times_json=times,
+            department=department,
+        )
         return jsonify(ok=True)
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 500
@@ -4369,9 +4402,288 @@ def api_fingerprint_progress():
 
 def init_app():
     database.init_db()
+    database.run_startup_data_migrations()
     if not database.list_jobs():
         init_jobs.init_all_jobs()
     _ensure_queue_worker()
+
+
+# =============================================================================
+# 跟进台
+# =============================================================================
+
+@app.route("/tracker")
+def tracker_page():
+    week_start = database.get_app_setting('tracker_week_start')
+    sys_candidates = database.list_tracker_system_candidates(week_start)
+    manual_candidates = database.list_tracker_manual()
+
+    # 合并所有候选人
+    all_candidates = list(sys_candidates)
+    for m in manual_candidates:
+        all_candidates.append({**m, 'entry_source': m.get('entry_source', 'manual')})
+
+    # 按阶段排序（按 HR_STAGE_ORDER 索引）
+    order_map = {s: i for i, s in enumerate(database.HR_STAGE_ORDER)}
+    all_candidates.sort(key=lambda x: order_map.get(x.get('stage', ''), 99))
+
+    # 同名多岗位标注
+    from collections import defaultdict
+    name_jobs = defaultdict(list)
+    for c in all_candidates:
+        name_jobs[c.get('name', '')].append(c.get('job_name', ''))
+
+    return render_template('tracker.html',
+        all_candidates=all_candidates,
+        name_jobs=dict(name_jobs),
+        week_start=week_start or '',
+        stage_order=database.HR_STAGE_ORDER,
+        tracker_active=list(database.TRACKER_ACTIVE_STAGES),
+        tracker_reject=list(database.TRACKER_REJECT_STAGES),
+    )
+
+
+@app.route("/api/tracker/start_week", methods=["POST"])
+def api_tracker_start_week():
+    """开始本周：设置 tracker_week_start 为本周周一 00:00"""
+    # 幂等：若本周已设置，返回现有值
+    now = datetime.now()
+    this_monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    monday_iso = this_monday.isoformat()
+
+    current = database.get_app_setting('tracker_week_start')
+    if current and current >= monday_iso:
+        return jsonify(ok=True, already=True, week_start=current)
+
+    database.set_app_setting('tracker_week_start', monday_iso)
+    return jsonify(ok=True, already=False, week_start=monday_iso)
+
+
+@app.route("/api/tracker/start_week/preview", methods=["GET"])
+def api_tracker_start_week_preview():
+    """预览将被清除的候选人列表"""
+    week_start = database.get_app_setting('tracker_week_start')
+    now = datetime.now()
+    this_monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+    sys_all = database.list_tracker_system_candidates(week_start_iso=None)
+    to_clear = []
+    for c in sys_all:
+        if c['stage'] not in (database.TRACKER_REJECT_STAGES | {'已入职'}):
+            continue
+        try:
+            hr = database.get_hr_stage(c['evaluation_id'])
+            times = json.loads((hr.get('stage_times_json') if hr else '') or '{}')
+        except Exception:
+            times = {}
+        ts = times.get(c['stage'], '')
+        if ts and ts < this_monday:
+            to_clear.append({'name': c['name'], 'job': c['job_name'], 'stage': c['stage'], 'time': ts})
+    return jsonify(ok=True, to_clear=to_clear, new_week_start=this_monday)
+
+
+@app.route("/api/tracker/manual", methods=["POST"])
+def api_tracker_manual_add():
+    data = request.get_json() or {}
+    entry_id = database.add_tracker_manual(
+        name=data.get('name','').strip(),
+        job_name=data.get('job_name',''),
+        age=data.get('age'),
+        stage=data.get('stage',''),
+        stage_time=data.get('stage_time',''),
+        department=data.get('department',''),
+        education=data.get('education',''),
+        school_major=data.get('school_major',''),
+        source_label=data.get('source_label',''),
+        note=data.get('note',''),
+        entry_source=data.get('entry_source','manual'),
+    )
+    return jsonify(ok=True, id=entry_id)
+
+
+@app.route("/api/tracker/manual/<int:entry_id>", methods=["PUT"])
+def api_tracker_manual_update(entry_id):
+    data = request.get_json() or {}
+    allowed = {'name','job_name','age','stage','stage_time','department',
+               'education','school_major','source_label','note'}
+    kwargs = {k: v for k, v in data.items() if k in allowed}
+    database.update_tracker_manual(entry_id, **kwargs)
+    return jsonify(ok=True)
+
+
+@app.route("/api/tracker/manual/<int:entry_id>", methods=["DELETE"])
+def api_tracker_manual_delete(entry_id):
+    database.delete_tracker_manual(entry_id)
+    return jsonify(ok=True)
+
+
+@app.route("/api/tracker/dept", methods=["POST"])
+def api_tracker_dept():
+    """更新系统候选人的部门字段（跟进台内联编辑）"""
+    data = request.get_json() or {}
+    eval_id    = data.get('evaluation_id')
+    department = data.get('department', '')
+    dept_from_yuyue = data.get('dept_from_yuyue', '')  # 已约面时记录的部门，用于冲突检测
+
+    if not eval_id:
+        return jsonify(ok=False, message="缺少 evaluation_id"), 400
+
+    existing = database.get_hr_stage(int(eval_id))
+    conflict = False
+    if existing:
+        orig = existing.get('department') or ''
+        conflict = bool(orig) and orig != department
+
+    database.upsert_hr_stage(
+        int(eval_id),
+        existing['job_id'] if existing else 0,
+        stages=json.loads(existing.get('stages_json') or '[]') if existing else [],
+        reject_reason=existing.get('reject_reason','') if existing else '',
+        note=existing.get('note','') if existing else '',
+        stage_times_json=json.loads(existing.get('stage_times_json') or '{}') if existing else {},
+        department=department,
+    )
+    return jsonify(ok=True, conflict=conflict)
+
+
+@app.route("/export/tracker")
+def export_tracker():
+    """生成并下载跟进台 Excel"""
+    week_start = database.get_app_setting('tracker_week_start')
+    sys_candidates = database.list_tracker_system_candidates(week_start)
+    manual_candidates = database.list_tracker_manual()
+
+    active, reject = [], []
+    for c in sys_candidates:
+        row = {
+            'stage':       c.get('stage',''),
+            'name':        c.get('name',''),
+            'job_name':    c.get('job_name',''),
+            'age':         c.get('age',''),
+            'stage_time':  c.get('stage_time',''),
+            'department':  c.get('department',''),
+            'education':   c.get('first_degree',''),
+            'source_label': '',
+            'school_major': f"{c.get('school','') or ''} {c.get('major','') or ''}".strip(),
+            'pdf': '',
+        }
+        if c['stage'] in database.TRACKER_ACTIVE_STAGES:
+            active.append(row)
+        else:
+            reject.append(row)
+
+    for m in manual_candidates:
+        row = {
+            'stage':       m.get('stage',''),
+            'name':        m.get('name',''),
+            'job_name':    m.get('job_name',''),
+            'age':         m.get('age',''),
+            'stage_time':  m.get('stage_time',''),
+            'department':  m.get('department',''),
+            'education':   m.get('education',''),
+            'source_label': m.get('source_label',''),
+            'school_major': m.get('school_major',''),
+            'pdf': '',
+        }
+        if m.get('stage','') in database.TRACKER_REJECT_STAGES or m.get('stage','') in {'不合适','个人放弃'}:
+            reject.append(row)
+        else:
+            active.append(row)
+
+    order_map = {s: i for i, s in enumerate(database.HR_STAGE_ORDER)}
+    active.sort(key=lambda x: order_map.get(x.get('stage',''), 99))
+    reject.sort(key=lambda x: order_map.get(x.get('stage',''), 99))
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "面试跟进台"
+
+    # 生成时间范围
+    now_dt = datetime.now()
+    if week_start:
+        try:
+            ws_dt = datetime.fromisoformat(week_start)
+            we_dt = ws_dt + timedelta(days=6)
+            date_range = f"{ws_dt.strftime('%Y-%m-%d')} 至 {we_dt.strftime('%Y-%m-%d')}"
+        except Exception:
+            date_range = now_dt.strftime('%Y-%m-%d')
+    else:
+        date_range = now_dt.strftime('%Y-%m-%d')
+
+    export_time = now_dt.strftime('%Y-%m-%d %H:%M')
+
+    # 第1行：元信息
+    ws.append([f"导出时间：{export_time}　　数据范围：{date_range}"])
+    ws.merge_cells('A1:J1')
+    ws['A1'].font = Font(color='888888', italic=True, size=10)
+
+    # 表头
+    headers = ['面试结果','姓名','应聘岗位','年龄','面试/入职时间','需求部门','学历','简历来源','毕业院校/专业','简历PDF']
+    ws.append(headers)
+    header_row = ws[2]
+    for cell in header_row:
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='3D5AFE')
+        cell.alignment = Alignment(horizontal='center')
+
+    # 列宽
+    col_widths = [10,10,14,6,16,12,10,10,24,10]
+    for i, w in enumerate(col_widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+
+    def write_rows(rows, fill_color=None):
+        for r in rows:
+            ws.append([
+                r['stage'], r['name'], r['job_name'], r['age'],
+                r['stage_time'], r['department'], r['education'],
+                r['source_label'], r['school_major'], r['pdf'],
+            ])
+            if fill_color:
+                for cell in ws[ws.max_row]:
+                    cell.fill = PatternFill('solid', fgColor=fill_color)
+
+    # 活跃区域
+    if active:
+        ws.append(['── 活跃候选人 ──'])
+        ws.merge_cells(f'A{ws.max_row}:J{ws.max_row}')
+        ws[f'A{ws.max_row}'].font = Font(bold=True, color='1565C0')
+        ws[f'A{ws.max_row}'].fill = PatternFill('solid', fgColor='E3F2FD')
+
+    write_rows([r for r in active if r['stage'] != '已入职'])
+    # 已入职单独绿色
+    write_rows([r for r in active if r['stage'] == '已入职'], fill_color='E8F5E9')
+
+    # 不通过区域
+    if reject:
+        ws.append(['── 不通过 ──'])
+        ws.merge_cells(f'A{ws.max_row}:J{ws.max_row}')
+        ws[f'A{ws.max_row}'].font = Font(bold=True, color='B71C1C')
+        ws[f'A{ws.max_row}'].fill = PatternFill('solid', fgColor='FFEBEE')
+        write_rows(reject, fill_color='F5F5F5')
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    # 文件名
+    if week_start:
+        try:
+            ws_dt = datetime.fromisoformat(week_start)
+            we_dt = ws_dt + timedelta(days=6)
+            fname = f"面试跟进表_{ws_dt.strftime('%Y%m%d')}至{we_dt.strftime('%Y%m%d')}_导出{now_dt.strftime('%m%d-%H%M')}.xlsx"
+        except Exception:
+            fname = f"面试跟进表_{now_dt.strftime('%Y%m%d-%H%M')}.xlsx"
+    else:
+        fname = f"面试跟进表_{now_dt.strftime('%Y%m%d-%H%M')}.xlsx"
+
+    return send_file(
+        buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=fname,
+    )
 
 
 if __name__ == "__main__":

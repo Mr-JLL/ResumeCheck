@@ -338,6 +338,9 @@
                 background:transparent;color:#fff;font-size:12px;cursor:pointer}
 .apr-bg-btn{background:#2c3e50!important;color:#fff!important}
 .apr-bg-btn:hover{background:#34495e!important}
+.sd-group-label{font-size:10px;color:#aaa;font-weight:700;padding:4px 10px 2px;
+  text-transform:uppercase;letter-spacing:.5px;border-top:1px solid #f0f0f0;margin-top:4px}
+.sd-group-label:first-child{border-top:none;margin-top:0}
 </style>
 
 <script>
@@ -351,8 +354,29 @@ const STAGE_COLORS   = {
   '已一面':'#8e44ad','已二面':'#6c3483','谈薪中':'#e67e22',
   '签批中':'#d35400','已入职':'#27ae60','无标签':'#bdc3c7'
 };
+// 新增常量
+const STAGES_NEED_TIME = new Set(['已一面','已二面']);
+const STAGES_NEED_DATE = new Set(['待入职','已入职']);
+const STAGE_COLORS_NEW = {
+  '已联系':'#95a5a6','拒绝':'#e74c3c','已约面':'#9b59b6',
+  '已一面':'#2980b9','已二面':'#1a5276','待谈薪':'#e67e22',
+  '签批中':'#d35400','待入职':'#8e44ad','已入职':'#27ae60',
+  '不合适':'#7f8c8d','个人放弃':'#95a5a6','无标签':'#bdc3c7'
+};
+// 阶段分组（用于单选UI）
+const STAGE_GROUPS = [
+  { label:'面试前', stages:['已联系','拒绝'] },
+  { label:'面试安排', stages:['已约面'] },
+  { label:'面试进展', stages:['已一面','已二面','待谈薪','签批中'] },
+  { label:'结果', stages:['待入职','已入职','不合适','个人放弃'] },
+];
 
 let candidates = {{ candidates|tojson }};
+// 从 hr_stages 和 hr_stage_times 规范化
+candidates = candidates.map(c => {
+  c.stage_times = c.hr_stage_times || {};
+  return c;
+});
 let _openDd = null;  // 当前打开的 dropdown evaluation_id
 
 // ── 工具 ─────────────────────────────────────────────────
@@ -470,17 +494,23 @@ function renderCard(c) {
 
 
   // 需求8(1): 向下拉取选择栏（在卡片头部，可见于折叠状态）
-  const ddOptions = STAGE_ORDER.map(s => {
-    const checked = stages.includes(s) ? 'checked' : '';
-    return `<label class="sd-option" onclick="event.stopPropagation()">
-      <input type="checkbox" ${checked}
-             onchange="stageChange(${c.evaluation_id},'${s}',this.checked)"
-             onclick="event.stopPropagation()">
-      <span style="color:${STAGE_COLORS[s]};font-weight:600">${s}</span>
-    </label>`;
-  }).join('');
+  const currentStage = stages.length ? stages[0] : '';
+  const ddBtnText = currentStage || '选择阶段';
 
-  const ddBtnText = stages.length ? stages.join('、') : '选择阶段';
+  // 单选分组式选择器
+  const ddOptions = STAGE_GROUPS.map(group => {
+    const opts = group.stages.map(s => {
+      const checked = (currentStage === s) ? 'checked' : '';
+      const color = STAGE_COLORS_NEW[s] || '#555';
+      return `<label class="sd-option" onclick="event.stopPropagation()">
+        <input type="radio" name="stage_${c.evaluation_id}" value="${s}" ${checked}
+               onchange="stageChangeSingle(${c.evaluation_id},'${s}')"
+               onclick="event.stopPropagation()">
+        <span style="color:${color};font-weight:600">${s}</span>
+      </label>`;
+    }).join('');
+    return `<div class="sd-group-label">${group.label}</div>${opts}`;
+  }).join('');
 
   const isSel = aprSelected.has(c.evaluation_id);
   return `
@@ -551,30 +581,156 @@ function toggleCard(evalId) {
 let _pendingRRId   = null;
 let _pendingRRName = null;
 
-async function stageChange(evalId, stage, checked) {
+// ── 单选阶段变更 ──────────────────────────────────────────
+async function stageChangeSingle(evalId, newStage) {
   const c = candidates.find(x => x.evaluation_id === evalId);
   if (!c) return;
-  c.hr_stages = c.hr_stages || [];
 
-  if (checked) {
-    if (!c.hr_stages.includes(stage)) c.hr_stages.push(stage);
-    // 需求8(5): 选了拒绝 → 弹拒绝原因 Modal
-    if (stage === '拒绝') {
-      _pendingRRId   = evalId;
-      _pendingRRName = c.name || '未知';
-      // 先保存无原因版本
-      await saveStage(c, false);
-      openRRModal(c.name, c.hr_reject_reason);
-      return;
-    }
-  } else {
-    c.hr_stages = c.hr_stages.filter(s => s !== stage);
-    if (stage === '拒绝') c.hr_reject_reason = '';
+  // 弹窗触发
+  if (newStage === '已约面') {
+    _pendingStageEvalId = evalId;
+    _pendingStage = newStage;
+    openDeptModal(c);
+    return;
   }
-  await saveStage(c);
+  if (STAGES_NEED_TIME.has(newStage)) {
+    _pendingStageEvalId = evalId;
+    _pendingStage = newStage;
+    openTimeModal(c, newStage, false);
+    return;
+  }
+  if (newStage === '待入职') {
+    _pendingStageEvalId = evalId;
+    _pendingStage = newStage;
+    openTimeModal(c, newStage, false);
+    return;
+  }
+  if (newStage === '已入职') {
+    _pendingStageEvalId = evalId;
+    _pendingStage = newStage;
+    openTimeModal(c, newStage, true); // 必填
+    return;
+  }
+
+  c.hr_stages = [newStage];
+  await saveStageNew(c, newStage, '');
 }
 
-async function saveStage(c, reRender = true) {
+let _pendingStageEvalId = null;
+let _pendingStage = null;
+
+// ── 部门弹窗（已约面触发）────────────────────────────────
+function openDeptModal(c) {
+  document.getElementById('dept-modal-name').textContent = c.name || '未知';
+  document.getElementById('dept-modal-input').value = c.department || '';
+  document.getElementById('dept-modal').style.display = 'flex';
+}
+
+async function confirmDept() {
+  const dept = document.getElementById('dept-modal-input').value.trim();
+  document.getElementById('dept-modal').style.display = 'none';
+  if (_pendingStageEvalId === null) return;
+  const c = candidates.find(x => x.evaluation_id === _pendingStageEvalId);
+  if (c) {
+    c.hr_stages = ['已约面'];
+    c.department = dept;
+    await saveStageNew(c, '已约面', '', dept);
+  }
+  _pendingStageEvalId = null;
+  _pendingStage = null;
+}
+
+function cancelDept() {
+  document.getElementById('dept-modal').style.display = 'none';
+  // 恢复原来的选中状态
+  if (_pendingStageEvalId !== null) {
+    const c = candidates.find(x => x.evaluation_id === _pendingStageEvalId);
+    if (c) renderAll();
+  }
+  _pendingStageEvalId = null;
+  _pendingStage = null;
+}
+
+// ── 时间弹窗 ─────────────────────────────────────────────
+function openTimeModal(c, stage, required) {
+  const isDate = stage === '待入职' || stage === '已入职';
+  document.getElementById('time-modal-title').textContent =
+    stage === '待入职' ? '填写预计入职日期' :
+    stage === '已入职' ? '填写实际入职日期（必填）' :
+    `填写${stage}时间`;
+  document.getElementById('time-modal-name').textContent = c.name || '未知';
+
+  const inp = document.getElementById('time-modal-input');
+  inp.type = isDate ? 'date' : 'datetime-local';
+  inp.required = required;
+
+  // 预填已存的时间
+  const existingTime = (c.stage_times || {})[stage] || '';
+  if (existingTime) {
+    inp.value = isDate ? existingTime.slice(0,10) : existingTime.slice(0,16).replace(' ','T');
+  } else {
+    inp.value = '';
+  }
+
+  document.getElementById('time-modal-required-hint').style.display = required ? 'block' : 'none';
+  document.getElementById('time-modal-skip').style.display = required ? 'none' : 'inline-block';
+  document.getElementById('time-modal').style.display = 'flex';
+}
+
+async function confirmTime() {
+  const inp = document.getElementById('time-modal-input');
+  const val = inp.value.trim();
+  const required = inp.required;
+  if (required && !val) {
+    document.getElementById('time-modal-required-hint').style.display = 'block';
+    inp.focus();
+    return;
+  }
+  document.getElementById('time-modal').style.display = 'none';
+  if (_pendingStageEvalId === null) return;
+
+  const c = candidates.find(x => x.evaluation_id === _pendingStageEvalId);
+  const stage = _pendingStage;
+  if (c) {
+    c.hr_stages = [stage];
+    if (!c.stage_times) c.stage_times = {};
+    // 格式化时间
+    let formatted = val;
+    if (inp.type === 'datetime-local' && val) {
+      formatted = val.replace('T', ' ');
+    }
+    if (formatted) c.stage_times[stage] = formatted;
+    await saveStageNew(c, stage, formatted);
+  }
+  _pendingStageEvalId = null;
+  _pendingStage = null;
+}
+
+async function skipTime() {
+  document.getElementById('time-modal').style.display = 'none';
+  if (_pendingStageEvalId === null) return;
+  const c = candidates.find(x => x.evaluation_id === _pendingStageEvalId);
+  const stage = _pendingStage;
+  if (c) {
+    c.hr_stages = [stage];
+    await saveStageNew(c, stage, '');
+  }
+  _pendingStageEvalId = null;
+  _pendingStage = null;
+}
+
+function cancelTime() {
+  document.getElementById('time-modal').style.display = 'none';
+  if (_pendingStageEvalId !== null) {
+    const c = candidates.find(x => x.evaluation_id === _pendingStageEvalId);
+    if (c) renderAll();
+  }
+  _pendingStageEvalId = null;
+  _pendingStage = null;
+}
+
+// ── 保存阶段（新版，单选 + 时间 + 部门）──────────────────
+async function saveStageNew(c, stage, stageTime, department) {
   try {
     await fetch('/api/hr_stage', {
       method: 'POST',
@@ -582,7 +738,28 @@ async function saveStage(c, reRender = true) {
       body: JSON.stringify({
         evaluation_id: c.evaluation_id,
         job_id: JOB_ID,
-        stages: c.hr_stages,
+        stage: stage,
+        stage_time: stageTime || '',
+        department: department !== undefined ? department : undefined,
+        reject_reason: c.hr_reject_reason || '',
+        note: c.hr_note || '',
+      })
+    });
+  } catch(_) {}
+  renderAll();
+}
+
+async function saveStage(c, reRender = true) {
+  const stage = (c.hr_stages || [])[0] || '';
+  try {
+    await fetch('/api/hr_stage', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        evaluation_id: c.evaluation_id,
+        job_id: JOB_ID,
+        stage: stage,
+        stage_time: (c.stage_times || {})[stage] || '',
         reject_reason: c.hr_reject_reason || '',
         note: c.hr_note || '',
       })
@@ -1359,4 +1536,39 @@ async function confirmImport() {
   }
 }
 </script>
+
+<!-- 部门填写弹窗（已约面触发）-->
+<div id="dept-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:1001;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:10px;padding:24px;width:360px;max-width:95vw;
+              box-shadow:0 20px 60px rgba(0,0,0,.25)">
+    <div style="font-size:15px;font-weight:700;color:#9b59b6;margin-bottom:8px">填写需求部门</div>
+    <p style="font-size:12px;color:#888;margin:0 0 14px">候选人：<b id="dept-modal-name"></b>（已约面）</p>
+    <input type="text" id="dept-modal-input" placeholder="请输入部门名称，如：铝合金四部"
+           style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #ddd;
+                  border-radius:6px;font-size:13px;margin-bottom:16px">
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="cancelDept()" style="padding:7px 16px;border:1px solid #ccc;border-radius:5px;background:#f5f6fa;cursor:pointer;font-size:13px">跳过</button>
+      <button onclick="confirmDept()" style="padding:7px 18px;border:none;border-radius:5px;background:#9b59b6;color:#fff;cursor:pointer;font-size:13px;font-weight:600">确认</button>
+    </div>
+  </div>
+</div>
+
+<!-- 时间填写弹窗 -->
+<div id="time-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:1001;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:10px;padding:24px;width:360px;max-width:95vw;
+              box-shadow:0 20px 60px rgba(0,0,0,.25)">
+    <div id="time-modal-title" style="font-size:15px;font-weight:700;color:#2c3e50;margin-bottom:8px">填写面试时间</div>
+    <p style="font-size:12px;color:#888;margin:0 0 14px">候选人：<b id="time-modal-name"></b></p>
+    <input id="time-modal-input" style="width:100%;box-sizing:border-box;padding:8px 10px;
+           border:1px solid #ddd;border-radius:6px;font-size:13px;margin-bottom:8px">
+    <div id="time-modal-required-hint" style="display:none;color:#e74c3c;font-size:12px;margin-bottom:8px">⚠ 已入职必须填写实际入职日期</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+      <button onclick="cancelTime()" style="padding:7px 16px;border:1px solid #ccc;border-radius:5px;background:#f5f6fa;cursor:pointer;font-size:13px">取消</button>
+      <button id="time-modal-skip" onclick="skipTime()" style="padding:7px 16px;border:1px solid #ccc;border-radius:5px;background:#f5f6fa;cursor:pointer;font-size:13px">跳过</button>
+      <button onclick="confirmTime()" style="padding:7px 18px;border:none;border-radius:5px;background:#3d5afe;color:#fff;cursor:pointer;font-size:13px;font-weight:600">确认</button>
+    </div>
+  </div>
+</div>
 {% endblock %}

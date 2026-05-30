@@ -230,6 +230,31 @@ CREATE TABLE IF NOT EXISTS job_criteria_notes (
 );
 CREATE INDEX IF NOT EXISTS idx_jcn_job ON job_criteria_notes(job_id);
 CREATE INDEX IF NOT EXISTS idx_jcn_status ON job_criteria_notes(status);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tracker_manual_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    job_name TEXT NOT NULL DEFAULT '',
+    age INTEGER,
+    stage TEXT DEFAULT '',
+    stage_time TEXT DEFAULT '',
+    department TEXT DEFAULT '',
+    education TEXT DEFAULT '',
+    school_major TEXT DEFAULT '',
+    source_label TEXT DEFAULT '',
+    note TEXT DEFAULT '',
+    entry_source TEXT DEFAULT 'manual',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tme_stage ON tracker_manual_entries(stage);
+CREATE INDEX IF NOT EXISTS idx_tme_source ON tracker_manual_entries(entry_source);
 """
 
 # 列迁移后才能创建的索引
@@ -251,6 +276,8 @@ MIGRATIONS = [
     ("jobs", "rule_config", "TEXT"),
     ("candidates", "ability_fingerprint", "TEXT"),
     ("jobs", "english_required", "TEXT DEFAULT 'no'"),
+    ("hr_stage_tags", "stage_times_json", "TEXT DEFAULT '{}'"),
+    ("hr_stage_tags", "department", "TEXT DEFAULT ''"),
 ]
 
 
@@ -1626,7 +1653,7 @@ def search_candidates_by_fingerprint(keywords: list,
 # 通过/不通过简历查询（需求7）
 # =============================================================================
 
-HR_STAGE_ORDER = ['已联系', '拒绝', '已约面', '已一面', '已二面', '谈薪中', '签批中', '已入职']
+HR_STAGE_ORDER = ['已联系', '拒绝', '已约面', '已一面', '已二面', '待谈薪', '签批中', '待入职', '已入职', '不合适', '个人放弃']
 REJECT_REASONS = ['薪酬', '加班', '距离', '福利', '家庭', '其他']
 
 
@@ -1704,26 +1731,36 @@ def get_hr_stage(evaluation_id):
         return dict(row) if row else None
 
 
-def upsert_hr_stage(evaluation_id, job_id, stages=None, reject_reason='', note=''):
-    """保存或更新候选人的 HR 阶段标签。"""
+def upsert_hr_stage(evaluation_id, job_id, stages=None, reject_reason='', note='',
+                    stage_times_json=None, department=None):
     stages_json = json.dumps(stages or [], ensure_ascii=False)
     ts = now_iso()
     with get_conn() as conn:
         existing = conn.execute(
-            "SELECT id FROM hr_stage_tags WHERE evaluation_id=?",
+            "SELECT id, stage_times_json, department FROM hr_stage_tags WHERE evaluation_id=?",
             (evaluation_id,)).fetchone()
         if existing:
+            # 若调用方未传 stage_times_json，保留原值
+            old_times = existing['stage_times_json'] or '{}'
+            new_times = json.dumps(stage_times_json, ensure_ascii=False) if stage_times_json is not None else old_times
+            old_dept = existing['department'] or ''
+            new_dept = department if department is not None else old_dept
             conn.execute("""
                 UPDATE hr_stage_tags
-                SET stages_json=?, reject_reason=?, note=?, updated_at=?
+                SET stages_json=?, reject_reason=?, note=?, updated_at=?,
+                    stage_times_json=?, department=?
                 WHERE evaluation_id=?
-            """, (stages_json, reject_reason, note, ts, evaluation_id))
+            """, (stages_json, reject_reason, note, ts, new_times, new_dept, evaluation_id))
         else:
+            times_str = json.dumps(stage_times_json or {}, ensure_ascii=False)
+            dept_str  = department or ''
             conn.execute("""
                 INSERT INTO hr_stage_tags
-                    (evaluation_id, job_id, stages_json, reject_reason, note, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (evaluation_id, job_id, stages_json, reject_reason, note, ts))
+                    (evaluation_id, job_id, stages_json, reject_reason, note, updated_at,
+                     stage_times_json, department)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (evaluation_id, job_id, stages_json, reject_reason, note, ts,
+                  times_str, dept_str))
 
 
 def update_hr_note(evaluation_id, note):
@@ -2115,6 +2152,203 @@ def refresh_criteria_note_reviewed(note_id):
             "UPDATE job_criteria_notes SET confirmed_at=datetime('now') WHERE id=?",
             (note_id,)
         )
+
+
+# =============================================================================
+# app_settings
+# =============================================================================
+
+def get_app_setting(key, default=None):
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+        return row['value'] if row else default
+
+
+def set_app_setting(key, value):
+    ts = now_iso()
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO app_settings(key, value, updated_at) VALUES(?,?,?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """, (key, value, ts))
+
+
+# =============================================================================
+# tracker_manual_entries
+# =============================================================================
+
+def add_tracker_manual(name, job_name='', age=None, stage='', stage_time='',
+                        department='', education='', school_major='',
+                        source_label='', note='', entry_source='manual'):
+    ts = now_iso()
+    with get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO tracker_manual_entries
+                (name, job_name, age, stage, stage_time, department, education,
+                 school_major, source_label, note, entry_source, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (name, job_name, age, stage, stage_time, department, education,
+              school_major, source_label, note, entry_source, ts, ts))
+        return cur.lastrowid
+
+
+def update_tracker_manual(entry_id, **kwargs):
+    allowed = {'name','job_name','age','stage','stage_time','department',
+               'education','school_major','source_label','note'}
+    sets, vals = [], []
+    for k, v in kwargs.items():
+        if k in allowed:
+            sets.append(f"{k}=?")
+            vals.append(v)
+    if not sets:
+        return
+    vals.append(now_iso())
+    vals.append(entry_id)
+    with get_conn() as conn:
+        conn.execute(
+            f"UPDATE tracker_manual_entries SET {', '.join(sets)}, updated_at=? WHERE id=?",
+            vals)
+
+
+def delete_tracker_manual(entry_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM tracker_manual_entries WHERE id=?", (entry_id,))
+
+
+def list_tracker_manual():
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM tracker_manual_entries ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+# =============================================================================
+# 跟进台：系统候选人查询
+# =============================================================================
+
+TRACKER_VISIBLE_STAGES  = {'已一面','已二面','待谈薪','签批中','待入职','已入职','不合适','个人放弃'}
+TRACKER_ACTIVE_STAGES   = {'已一面','已二面','待谈薪','签批中','待入职','已入职'}
+TRACKER_REJECT_STAGES   = {'不合适','个人放弃'}
+TRACKER_HIDDEN_STAGES   = {'已联系','拒绝','已约面'}
+
+# 阶段 → 时间列是否展示
+STAGE_SHOW_TIME = {'已一面','已二面','待入职','已入职'}
+
+
+def list_tracker_system_candidates(week_start_iso=None):
+    """
+    返回所有通过页面候选人中，阶段在 TRACKER_VISIBLE_STAGES 内的记录。
+    week_start_iso: 若提供（ISO格式的周一00:00），则对已入职/不合适/个人放弃
+                    按其 stage_times_json 中的时间过滤（仅保留本周及以后的）。
+    """
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT c.name, c.age, c.first_degree, c.school, c.major,
+                   j.name AS job_name,
+                   e.id   AS evaluation_id,
+                   ht.stages_json, ht.stage_times_json, ht.department,
+                   ht.reject_reason
+            FROM outcomes o
+            JOIN evaluations e ON o.evaluation_id = e.id
+            JOIN candidates  c ON e.candidate_id  = c.id
+            JOIN jobs        j ON e.job_id         = j.id
+            JOIN hr_stage_tags ht ON ht.evaluation_id = e.id
+            WHERE o.action IN ('approved','hired')
+              AND NOT EXISTS (
+                SELECT 1 FROM outcomes o2
+                WHERE o2.evaluation_id = o.evaluation_id
+                  AND o2.id > o.id
+                  AND o2.action IN ('approved','hired','disapproved','rejected')
+              )
+        """).fetchall()
+
+    result = []
+    for r in rows:
+        r = dict(r)
+        try:
+            stages = json.loads(r.get('stages_json') or '[]')
+        except Exception:
+            stages = []
+        if not stages:
+            continue
+        stage = stages[0]
+        if stage not in TRACKER_VISIBLE_STAGES:
+            continue
+
+        try:
+            times = json.loads(r.get('stage_times_json') or '{}')
+        except Exception:
+            times = {}
+
+        # 周一清除过滤
+        if week_start_iso and stage in TRACKER_REJECT_STAGES | {'已入职'}:
+            stage_ts = times.get(stage, '')
+            if stage_ts and stage_ts < week_start_iso:
+                continue
+
+        r['stage']      = stage
+        r['stage_time'] = times.get(stage, '') if stage in STAGE_SHOW_TIME else ''
+        r['entry_source'] = 'system'
+        result.append(r)
+
+    return result
+
+
+# =============================================================================
+# 数据迁移（启动时执行）
+# =============================================================================
+
+def run_startup_data_migrations():
+    """
+    1. 谈薪中 → 待谈薪
+    2. 多选 stages_json → 单选（保留 HR_STAGE_ORDER 优先级最高的一个）
+    3. 已入职 records without stage_times_json["已入职"]: 用 updated_at 补填
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, stages_json, stage_times_json, updated_at FROM hr_stage_tags"
+        ).fetchall()
+
+        for row in rows:
+            dirty = False
+            try:
+                stages = json.loads(row['stages_json'] or '[]')
+            except Exception:
+                stages = []
+            try:
+                times = json.loads(row['stage_times_json'] or '{}')
+            except Exception:
+                times = {}
+
+            # 1. 谈薪中 → 待谈薪
+            if '谈薪中' in stages:
+                stages = ['待谈薪' if s == '谈薪中' else s for s in stages]
+                if '谈薪中' in times:
+                    times['待谈薪'] = times.pop('谈薪中')
+                dirty = True
+
+            # 2. 多选 → 单选
+            if len(stages) > 1:
+                for preferred in HR_STAGE_ORDER:
+                    if preferred in stages:
+                        stages = [preferred]
+                        break
+                else:
+                    stages = [stages[0]]
+                dirty = True
+
+            # 3. 已入职 无时间 → 补填 updated_at
+            if stages == ['已入职'] and '已入职' not in times:
+                times['已入职'] = row['updated_at'] or now_iso()
+                dirty = True
+
+            if dirty:
+                conn.execute(
+                    "UPDATE hr_stage_tags SET stages_json=?, stage_times_json=? WHERE id=?",
+                    (json.dumps(stages, ensure_ascii=False),
+                     json.dumps(times, ensure_ascii=False),
+                     row['id'])
+                )
 
 
 if __name__ == "__main__":
